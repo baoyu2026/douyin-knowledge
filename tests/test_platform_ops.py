@@ -269,7 +269,8 @@ def test_default_instance_root_honors_environment(
     monkeypatch.delenv("DOUYIN_KNOWLEDGE_ROOT")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     assert default_instance_root() == (tmp_path / "local" / "douyin-knowledge").resolve()
-    assert repository_root().name == "douyin-knowledge-public"
+    assert (repository_root() / "pyproject.toml").is_file()
+    assert (repository_root() / "skills" / "douyin-knowledge" / "SKILL.md").is_file()
 
 
 def test_run_job_reuses_bound_download_and_stops_exactly_there(tmp_path: Path) -> None:
