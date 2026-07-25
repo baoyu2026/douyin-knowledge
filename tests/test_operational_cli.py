@@ -219,7 +219,18 @@ def test_confirmed_publish_accepts_staged_candidate_without_review(
     source_id = "private-publication-source"
     register_collection_item(tmp_path, source_id)
     job_ref = make_job(tmp_path, aweme_id=source_id)
-    related = tmp_path / "library" / "参考分类" / "已有参考知识"
+    config = tmp_path / "config"
+    config.mkdir()
+    results = tmp_path / "human-results"
+    results.mkdir()
+    results_config = (
+        "version: 1\n"
+        f"root: '{results.as_posix()}'\n"
+        "layout: category-title-v1\n"
+        "source_video: copy\n"
+    )
+    (config / "results.yml").write_text(results_config, encoding="utf-8")
+    related = results / "参考分类" / "已有参考知识"
     related.mkdir(parents=True)
     (related / "内容整理.md").write_text("# 已有参考知识\n", encoding="utf-8")
     frames = sorted((tmp_path / "data" / "jobs" / job_ref / "analysis" / "keyframes").glob("*"))
@@ -249,8 +260,6 @@ def test_confirmed_publish_accepts_staged_candidate_without_review(
     )
     vault = tmp_path / "external-vault"
     (vault / ".obsidian").mkdir(parents=True)
-    config = tmp_path / "config"
-    config.mkdir()
     (config / "obsidian.yml").write_text(f"vault: '{vault.as_posix()}'\n", encoding="utf-8")
     (config / "config.yml").write_text(
         "publishing:\n  enabled: false\n  require_confirmation: true\n", encoding="utf-8"
@@ -272,14 +281,23 @@ def test_confirmed_publish_accepts_staged_candidate_without_review(
     (config / "config.yml").write_text(
         "publishing:\n  enabled: true\n  require_confirmation: true\n", encoding="utf-8"
     )
+    (config / "results.yml").unlink()
+    code, unconfigured = invoke(publish_args, capsys)
+    assert code == 2
+    assert unconfigured["error"]["code"] == "results_root_required"
+    (config / "results.yml").write_text(results_config, encoding="utf-8")
     code, published = invoke(
         publish_args,
         capsys,
     )
 
-    assert code == 0
+    assert code == 0, published
     assert published["data"]["state"] == "accepted"
     assert published["data"]["targets"] == {"library": "verified", "vault": "verified"}
+    entry = results / "AI 工具与智能体" / payload["title"]
+    assert (entry / "内容整理.md").is_file()
+    assert (entry / "原视频.mp4").is_file()
+    assert (entry / "资料信息.yml").is_file()
     code, reviews = invoke(
         ["--root", str(tmp_path), "review", "list", "--job-ref", job_ref, "--json"],
         capsys,

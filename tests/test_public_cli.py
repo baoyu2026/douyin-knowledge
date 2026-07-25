@@ -49,7 +49,47 @@ def test_init_is_idempotent_and_returns_safe_envelope(tmp_path: Path, capsys) ->
     assert (tmp_path / "schemas" / "structured-content-v1.schema.json").is_file()
     assert (tmp_path / "schemas" / "cli-envelope-v1.schema.json").is_file()
     assert (tmp_path / "schemas" / "config-v1.schema.json").is_file()
+    assert (tmp_path / "schemas" / "results-config-v1.schema.json").is_file()
+    assert (tmp_path / "config" / "results.yml").read_text(encoding="utf-8").startswith(
+        "version: 1\nroot: null\n"
+    )
+    assert first["data"]["results_root_configured"] is False
     assert str(tmp_path).casefold() not in "\n".join(all_strings(first)).casefold()
+
+
+def test_results_folder_requires_confirmation_and_returns_no_absolute_path(
+    tmp_path: Path, capsys
+) -> None:
+    code, _initialized = invoke(["--root", str(tmp_path), "init", "--json"], capsys)
+    assert code == 0
+    destination = tmp_path / "给人看的抖音知识库"
+    command = [
+        "--root",
+        str(tmp_path),
+        "configure",
+        "results",
+        "--path",
+        str(destination),
+        "--json",
+    ]
+
+    code, blocked = invoke(command, capsys)
+    assert code == 2
+    assert blocked["error"]["code"] == "confirmation_required"
+    assert not destination.exists()
+
+    code, configured = invoke([*command[:-1], "--confirm", "--json"], capsys)
+    assert code == 0
+    assert configured["operation"] == "configure_results"
+    assert configured["data"] == {
+        "changed": True,
+        "configured": True,
+        "created": True,
+        "layout": "category-title-v1",
+        "source_video": "copy",
+    }
+    assert destination.is_dir()
+    assert str(destination).casefold() not in "\n".join(all_strings(configured)).casefold()
 
 
 def test_status_reads_collection_registry_not_legacy_media_jobs(
@@ -149,6 +189,21 @@ def test_doctor_reports_safe_capability_matrix(
     vault = tmp_path / "vault"
     (vault / ".obsidian").mkdir(parents=True)
     (tmp_path / "config" / "obsidian.yml").write_text("vault: vault\n", encoding="utf-8")
+    results = tmp_path / "给人看的成果"
+    code, _configured = invoke(
+        [
+            "--root",
+            str(tmp_path),
+            "configure",
+            "results",
+            "--path",
+            str(results),
+            "--confirm",
+            "--json",
+        ],
+        capsys,
+    )
+    assert code == 0
     monkeypatch.setattr("app.pipeline._check_playwright_chromium", lambda **_kwargs: "available")
     monkeypatch.setattr("app.analyze_video.resolve_ffmpeg", lambda: "private-ffmpeg-path")
     monkeypatch.setattr(
@@ -170,5 +225,6 @@ def test_doctor_reports_safe_capability_matrix(
     assert data["ready_for_sync"] is True
     assert data["ready_for_analysis"] is True
     assert data["ready_for_publish"] is True
+    assert data["checks"]["results_root_configured"] is True
     assert data["repair_actions"] == []
     assert str(tmp_path).casefold() not in "\n".join(all_strings(payload)).casefold()

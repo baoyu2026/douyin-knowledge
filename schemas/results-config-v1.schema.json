@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://douyin-knowledge.local/schemas/results-config-v1.schema.json",
+  "title": "Douyin Knowledge Results Configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "root", "layout", "source_video"],
+  "properties": {
+    "version": {"const": 1},
+    "root": {"type": ["string", "null"]},
+    "layout": {"const": "category-title-v1"},
+    "source_video": {"const": "copy"}
+  }
+}

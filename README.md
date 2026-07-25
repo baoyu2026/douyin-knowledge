@@ -21,7 +21,7 @@
 
 ```text
 收藏快照 -> 单条 canary -> 本地 ASR/OCR/关键帧 -> AI 候选
-         -> 确定性校验 -> 发布 Library/Obsidian -> 对账验收 -> completed
+         -> 确定性校验 -> 发布成果库/Obsidian -> 对账验收 -> completed
                                                         -> 用户在 Obsidian 发现问题后反馈修正
 ```
 
@@ -34,7 +34,7 @@
 - 用户自己的抖音账号
 - Obsidian Vault（仅发布时需要）
 
-Codex + Windows + PowerShell 已完成发布级端到端验证。OpenClaw 尚未完成 1.2 版本的发布级端到端验证，只能在通过[宿主能力检查](skills/douyin-knowledge/references/host-adapters.md)后按实际能力使用，不应视为完整支持。
+Codex + Windows + PowerShell 已完成发布级端到端验证。OpenClaw 尚未完成 1.3 版本的发布级端到端验证，只能在通过[宿主能力检查](skills/douyin-knowledge/references/host-adapters.md)后按实际能力使用，不应视为完整支持。
 
 ## 快速安装
 
@@ -54,7 +54,7 @@ Set-Location douyin-knowledge
 - 将 Skill 安装到 `$HOME/.codex/skills/douyin-knowledge`；
 - 运行一次 `doctor` 环境检查。
 
-默认私有实例位于 `%LOCALAPPDATA%\douyin-knowledge`。Cookie、视频、数据库、模型、日志和生成内容都保存在私有实例中，不会写入 Git 仓库。
+默认私有实例位于 `%LOCALAPPDATA%\douyin-knowledge`。Cookie、下载缓存、数据库、模型、日志和中间分析都保存在私有实例中，不会写入 Git 仓库。给人翻阅的最终成果另存到首次使用时由用户明确选择的目录。
 
 要指定其他位置，在首次安装时传入明确路径：
 
@@ -65,6 +65,45 @@ Set-Location douyin-knowledge
 ```
 
 安装完成后重新打开 Codex 会话，使新 Skill 被发现。
+
+## 成果文件放在哪里
+
+项目把机器工作区和人类成果库分开：
+
+- 私有实例：保存任务编号目录、下载缓存、ASR/OCR、检查点和数据库，供程序恢复任务。
+- 成果库：保存按主题和标题整理的完整成果，供人直接用文件管理器翻阅。
+- Obsidian Vault：保存最终阅读笔记和附件，也是日常检查与纠错入口。
+
+首次使用时 Skill 会先询问成果库放在哪个文件夹，不会沿用任务编号目录，也不会自行猜测位置。手动配置命令为：
+
+```powershell
+$DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
+& $DK configure results `
+  --path 'D:\知识库\抖音收藏成果' `
+  --confirm `
+  --json
+```
+
+每条发布结果采用固定的人类目录结构：
+
+```text
+抖音收藏成果/
+  00-总索引/
+  AI 工具与智能体/
+    一个可以直接看懂的视频标题/
+      内容整理.md
+      原视频.mp4
+      资料信息.yml
+      附件/
+        完整时间轴.md
+      精选关键帧/
+        frame-001.jpg
+        ...
+```
+
+中文和空格会保留，Windows 不允许的文件名字符会替换为短横线。同一分类下两个不同视频同名时，后一个使用 `标题 (2)`，不会覆盖前一个。条目一旦发布会复用原目录，纠错不会生成重复文件夹。成果库包含一份真实的原视频副本，因此可以独立于私有缓存保存和备份。
+
+成果库开始参与发布对账后不能直接改根目录，否则历史 journal 无法确认原文件。当前版本会拒绝这种改绑；需要移动时应先保留原目录，等待后续迁移命令支持。
 
 ## 用 Skill 开始
 
@@ -94,6 +133,7 @@ Skill 会依次检查环境，并在以下操作前说明影响、等待确认�
 $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 
 & $DK doctor --json
+& $DK configure results --path 'D:\知识库\抖音收藏成果' --confirm --json
 & $DK login --confirm --json
 & $DK model install --name small --confirm --json
 & $DK sync --confirm --json
@@ -139,7 +179,9 @@ $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 
 ## 配置 Obsidian 发布
 
-发布默认关闭。先在私有实例中完成两项配置。
+发布默认关闭。先选择成果库目录，再在私有实例中完成 Obsidian 和发布开关配置。
+
+成果库使用前文的 `configure results` 命令设置，不要直接编辑保存绝对路径的私有配置文件。
 
 编辑 `config/obsidian.yml`，指向一个已经存在且包含 `.obsidian` 目录的 Vault：
 
@@ -161,7 +203,7 @@ publishing:
 & $DK doctor --json
 ```
 
-只有 `ready_for_publish` 为 `true` 时才能进入发布确认。发布先写 publication intent，再以原子写入方式更新本地 Library 与 Obsidian，最后通过哈希对账验收。任何内部草稿或单独的 Library 文件都不计为完成。
+只有 `results_root_configured` 和 `ready_for_publish` 都为 `true` 时才能进入发布确认。发布先写 publication intent，再以原子写入方式更新人类成果库与 Obsidian，最后通过哈希对账验收。任何内部草稿或单独的成果文件都不计为完成。
 
 ## 隐私与安全
 
@@ -200,7 +242,7 @@ git pull
 .\.venv\Scripts\python.exe -m compileall -q app src
 .\.venv\Scripts\python.exe -m build
 .\scripts\test-distribution.ps1 `
-  -WheelPath .\dist\douyin_knowledge-1.2.1-py3-none-any.whl `
+  -WheelPath .\dist\douyin_knowledge-1.3.0-py3-none-any.whl `
   -Python .\.venv\Scripts\python.exe
 ```
 

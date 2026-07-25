@@ -30,9 +30,9 @@ fabricate or generate `visual_evidence`.
 
 The visual inventory is complete input, not the publication selection. Use its stable
 `frame_index` mapping to choose 3 to 8 supported conclusions for the candidate's
-`visual_evidence`; Library and Obsidian publish only those referenced frames.
+`visual_evidence`; the results archive and Obsidian publish only those referenced frames.
 
-Read no other job, database, Cookie, log, Library, or orchestration file. Do not use
+Read no other job, database, Cookie, log, results archive, or orchestration file. Do not use
 network retrieval to enrich the evidence.
 
 ## Output
@@ -77,7 +77,7 @@ candidate, run `candidate repair-contract`.
 
 After successful import, treat the candidate as staged and ready for a separately
 confirmed publication. Do not pause for draft approval and do not count candidate
-import as completion. Publish to Library and Obsidian, reconcile the sealed targets,
+import as completion. Publish to the results archive and Obsidian, reconcile the sealed targets,
 and require `accepted` before reporting the job complete.
 
 The published Obsidian note starts with `review_status: unreviewed`; its independent

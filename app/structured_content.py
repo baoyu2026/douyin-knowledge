@@ -28,6 +28,7 @@ from app.content_stage import (
 )
 from app.keyframe_selection import resolve_keyframes
 from app.security import GateError, harden_private_project_directory
+from douyin_knowledge.result_archive import logical_library_handle, results_root
 
 STRUCTURED_SCHEMA_VERSION = 1
 STRUCTURED_SCHEMA_RELATIVE = Path("schemas/structured-content-v1.schema.json")
@@ -235,7 +236,7 @@ def _analysis_inputs(root: Path, job_id: str) -> tuple[dict[str, str], list[Path
 def _library_catalog(root: Path) -> dict[str, Path]:
     catalog: dict[str, Path] = {}
     duplicates: set[str] = set()
-    for path in sorted((root / "library").glob("*/*/内容整理.md")):
+    for path in sorted(results_root(root).glob("*/*/内容整理.md")):
         try:
             document = path.read_text(encoding="utf-8")
             if not document.startswith("---\n"):
@@ -427,7 +428,7 @@ def _resolve_payload(
         related.append(
             {
                 "title": title,
-                "path": catalog[title].relative_to(root).as_posix(),
+                "path": logical_library_handle(root, catalog[title]),
                 "reason": _single_line(item["reason"]),
             }
         )

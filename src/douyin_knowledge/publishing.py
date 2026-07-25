@@ -9,13 +9,18 @@ from typing import Any
 from app.analyze_video import sha256_file
 from app.content_stage import ContentStageError, validate_content_draft
 from app.obsidian_publish import NOTE_ROOT, _obsidian_component, configured_vault
-from app.publish_library import PublicationError, publish_job, safe_component
+from app.publish_library import PublicationError, publish_job, resolve_library_target
 from douyin_knowledge.contracts import CliError
 from douyin_knowledge.publication import (
     accept_publication,
     begin_publication,
     reconcile_publications,
     seal_publication_targets,
+)
+from douyin_knowledge.result_archive import (
+    ResultsConfigError,
+    configured_results_root,
+    results_handle,
 )
 from douyin_knowledge.review import latest_candidate_decision, require_current_candidate
 
@@ -77,6 +82,20 @@ def publish_staged_job(
             "the current candidate was rejected after publication",
             "import a corrected candidate from the current packet before publishing again",
         )
+    try:
+        archive_root = configured_results_root(root)
+    except ResultsConfigError as exc:
+        raise CliError(
+            exc.code,
+            "the human-readable results archive configuration is invalid",
+            "configure a writable results folder before publishing",
+        ) from exc
+    if archive_root is None or not archive_root.is_dir():
+        raise CliError(
+            "results_root_required",
+            "publishing requires an explicitly configured results folder",
+            "run configure results with an absolute path and explicit confirmation",
+        )
     draft_path = root / "orchestration" / "content-drafts" / f"{job_ref}-content.md"
     try:
         draft = validate_content_draft(root, job_ref, draft_path)
@@ -100,12 +119,16 @@ def publish_staged_job(
             "publishing requires an explicitly configured Obsidian vault",
             "set vault in config/obsidian.yml and retry",
         )
-    category = safe_component(draft.category, field="category", slug=True)
-    title = safe_component(draft.title, field="title", slug=True)
-    library_handle = (Path("library") / category / title / "内容整理.md").as_posix()
-    # Obsidian reads the category from the rendered Library front matter, where
-    # publication has already normalized it with the Library slug rules.
-    vault_category = _obsidian_component(category, field="category")
+    library_target = resolve_library_target(
+        root,
+        job_id=job_ref,
+        category=draft.category,
+        title=draft.title,
+        source_video=source,
+    )
+    library_handle = results_handle(root, library_target / "内容整理.md")
+    # Obsidian applies its own path sanitization to the human-facing category.
+    vault_category = _obsidian_component(draft.category, field="category")
     vault_title = _obsidian_component(draft.title, field="title")
     vault_relative = _registered_vault_note(database, job_ref) or (
         NOTE_ROOT / vault_category / f"{vault_title}.md"
@@ -113,8 +136,9 @@ def publish_staged_job(
     vault_handle = (Path("vault") / vault_relative).as_posix()
     draft_digest = _digest(draft_path)
     media_digest = sha256_file(source)
+    archive_scope = hashlib.sha256(str(archive_root).casefold().encode()).hexdigest()
     key = idempotency_key or hashlib.sha256(
-        f"{job_ref}:{draft_digest}:{media_digest}".encode()
+        f"{job_ref}:{draft_digest}:{media_digest}:{archive_scope}".encode()
     ).hexdigest()
     saga = begin_publication(
         root,

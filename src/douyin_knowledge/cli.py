@@ -24,6 +24,13 @@ from douyin_knowledge.platform_ops import sync as platform_sync
 from douyin_knowledge.protocol import export_packet, import_candidate, repair_contract
 from douyin_knowledge.publication import PublicationStateError, reconcile_publications
 from douyin_knowledge.publishing import publish_staged_job
+from douyin_knowledge.result_archive import (
+    RESULTS_CONFIG,
+    ResultsConfigError,
+    configure_results_root,
+    configured_results_root,
+    default_results_config,
+)
 from douyin_knowledge.review import list_reviews, record_review
 
 INSTANCE_DIRS = (
@@ -40,6 +47,7 @@ INSTANCE_DIRS = (
 DEFAULT_CONFIG = """version: 1
 project:
   data_root: ./data
+  # Legacy internal Library fallback. Published results use config/results.yml.
   library_root: ./library
   obsidian_vault: null
 analysis:
@@ -123,6 +131,7 @@ def _copy_schemas(root: Path) -> None:
         "structured-content-v1.schema.json",
         "cli-envelope-v1.schema.json",
         "config-v1.schema.json",
+        "results-config-v1.schema.json",
     ):
         source = repository_root() / "schemas" / name
         destination = root / "schemas" / name
@@ -153,18 +162,21 @@ def _init(root: Path) -> dict[str, Any]:
     config = root / "config" / "config.yml"
     downloader = root / "config" / "downloader.yml"
     obsidian = root / "config" / "obsidian.yml"
+    results = root / RESULTS_CONFIG
     schemas = tuple(
         root / "schemas" / name
         for name in (
             "structured-content-v1.schema.json",
             "cli-envelope-v1.schema.json",
             "config-v1.schema.json",
+            "results-config-v1.schema.json",
         )
     )
     reused = (
         config.is_file()
         and downloader.is_file()
         and obsidian.is_file()
+        and results.is_file()
         and all(schema.is_file() for schema in schemas)
         and all((root / relative).is_dir() for relative in INSTANCE_DIRS)
     )
@@ -176,6 +188,8 @@ def _init(root: Path) -> dict[str, Any]:
         _atomic_text(downloader, DOWNLOADER_CONFIG)
     if not obsidian.exists():
         _atomic_text(obsidian, "vault: null\n")
+    if not results.exists():
+        _atomic_text(results, default_results_config())
     _copy_schemas(root)
     return success(
         "init",
@@ -183,6 +197,7 @@ def _init(root: Path) -> dict[str, Any]:
             "reused": reused,
             "created": [] if reused else list(INSTANCE_DIRS),
             "publishing_enabled": False,
+            "results_root_configured": configured_results_root(root) is not None,
         },
         summary="instance is initialized",
     )
@@ -437,6 +452,11 @@ def _doctor(root: Path) -> dict[str, Any]:
         )
     except Exception:
         vault_configured = False
+    try:
+        archive = configured_results_root(root)
+        results_root_configured = bool(archive is not None and archive.is_dir())
+    except ResultsConfigError:
+        results_root_configured = False
     cookie_valid = False
     if cookie.is_file():
         try:
@@ -460,6 +480,7 @@ def _doctor(root: Path) -> dict[str, Any]:
         "ffmpeg_available": ffmpeg_available,
         "asr_model_present": asr_model_present,
         "vault_configured": vault_configured,
+        "results_root_configured": results_root_configured,
     }
     actions = []
     if not checks["chromium_runtime"]:
@@ -470,6 +491,8 @@ def _doctor(root: Path) -> dict[str, Any]:
         actions.append("run_confirmed_login")
     if not checks["asr_model_present"]:
         actions.append("install_local_asr_model")
+    if not checks["results_root_configured"]:
+        actions.append("configure_results_root")
     if not checks["vault_configured"]:
         actions.append("configure_obsidian_vault")
     ready_for_login = bool(
@@ -488,7 +511,7 @@ def _doctor(root: Path) -> dict[str, Any]:
             "ready_for_login": ready_for_login,
             "ready_for_sync": ready_for_sync,
             "ready_for_analysis": ready_for_analysis,
-            "ready_for_publish": vault_configured,
+            "ready_for_publish": vault_configured and results_root_configured,
             "checks": checks,
             "repair_actions": actions,
             "version": __version__,
@@ -571,6 +594,12 @@ def build_parser() -> argparse.ArgumentParser:
     model_install.add_argument("--name", choices=("tiny", "base", "small"), default="small")
     model_install.add_argument("--confirm", action="store_true")
     model_install.add_argument("--json", action="store_true")
+    configure = subparsers.add_parser("configure")
+    configure_commands = configure.add_subparsers(dest="configure_command", required=True)
+    configure_results = configure_commands.add_parser("results")
+    configure_results.add_argument("--path", type=Path, required=True)
+    configure_results.add_argument("--confirm", action="store_true")
+    configure_results.add_argument("--json", action="store_true")
     return parser
 
 
@@ -588,6 +617,15 @@ def main(argv: list[str] | None = None) -> int:
             payload = _init(root)
         elif operation == "status":
             payload = _status(root)
+        elif operation == "configure":
+            if not args.confirm:
+                _confirmation("configure results")
+            data = configure_results_root(root, args.path)
+            payload = success(
+                "configure_results",
+                data,
+                summary="human-readable results archive configured",
+            )
         elif operation == "plan":
             payload = _plan(root, int(args.limit))
         elif operation == "packet":
@@ -734,6 +772,19 @@ def main(argv: list[str] | None = None) -> int:
             exc.code,
             str(exc),
             "inspect publication status and retry only the same job",
+        )
+        payload = failure(operation, error)
+        exit_code = error.exit_code
+    except ResultsConfigError as exc:
+        action = (
+            "keep the configured archive in place; relocation is not supported after publication"
+            if exc.code == "results_root_locked"
+            else "choose a writable results folder and retry after explicit confirmation"
+        )
+        error = CliError(
+            exc.code,
+            str(exc),
+            action,
         )
         payload = failure(operation, error)
         exit_code = error.exit_code

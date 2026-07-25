@@ -38,7 +38,7 @@ candidate, a written but unverified note, or a review record is never completion
 evidence; only `accepted` is.
 
 A user correction request authorizes creating and importing the corrected candidate.
-Before writing the correction to Library or Obsidian, describe the publication scope
+Before writing the correction to the results archive or Obsidian, describe the publication scope
 again and obtain a new explicit publication confirmation.
 
 ## Credential and Privacy Rules

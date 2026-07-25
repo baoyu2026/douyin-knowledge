@@ -30,6 +30,27 @@ To change the private instance, rerun `install-skill.ps1 -InstanceRoot <path>`. 
 not hand-edit or expose `runtime.local.json`; it intentionally contains local
 absolute paths used only by the deterministic adapter.
 
+## Human-readable Results Archive
+
+The private instance remains the machine workspace for checkpoints, raw analysis,
+and task references. Results intended for people must use a separately chosen
+archive root. After `init`, ask the user for one absolute folder, explain the layout,
+obtain explicit confirmation, and run:
+
+```text
+<invoke> configure results --path <absolute-folder> --confirm --json
+```
+
+Do not choose a location silently and do not expose the stored absolute path. The
+CLI creates the folder when possible and stores its binding in `config/results.yml`.
+Each published item is filed as `<主分类>/<标题>/`; only title collisions receive a
+numeric suffix. The archive includes the original video as a real copy so it remains
+self-contained if private checkpoints are later cleaned.
+
+Do not hand-edit or relocate a configured archive after publications have been
+journaled. The root is locked because reconciliation must continue resolving every
+historical `results/` handle to the same files.
+
 ## Obsidian Vault
 
 Set the private instance's `config/obsidian.yml` to one existing Obsidian Vault:
@@ -39,5 +60,5 @@ vault: 'D:/Knowledge/My Vault'
 ```
 
 Use YAML quoting for spaces or non-ASCII paths. Require an existing `.obsidian`
-directory, then run `doctor --json` and require `ready_for_publish=true` before
-offering publication.
+directory, then run `doctor --json`. Require both `results_root_configured=true` and
+`ready_for_publish=true` before offering publication.

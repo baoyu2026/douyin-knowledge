@@ -1,4 +1,4 @@
 interface:
   display_name: "Douyin Knowledge"
-  short_description: "Publish Douyin favorites as reconciled local knowledge"
-  default_prompt: "Use $douyin-knowledge to process one Douyin favorite, ask before publishing, and count it complete only after Obsidian reconciliation succeeds."
+  short_description: "Organize Douyin favorites into a browsable knowledge archive"
+  default_prompt: "Use $douyin-knowledge to configure my results folder, process one Douyin favorite, and finish only after Obsidian reconciliation succeeds."

@@ -1,6 +1,7 @@
 version: 1
 project:
   data_root: ./data
+  # Legacy internal Library fallback. Published results use config/results.yml.
   library_root: ./library
   obsidian_vault: null
 analysis:

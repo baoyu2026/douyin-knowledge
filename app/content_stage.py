@@ -20,6 +20,11 @@ from app.analyze_video import JOB_ID_PATTERN
 from app.collection_registry import update_item_by_job
 from app.keyframe_selection import resolve_keyframes
 from app.security import GateError, harden_private_project_directory
+from douyin_knowledge.result_archive import (
+    ResultsConfigError,
+    resolve_logical_library_handle,
+    results_root,
+)
 
 CONTENT_SCHEMA_VERSION = 1
 REQUIRED_SECTIONS = (
@@ -172,7 +177,7 @@ def _validate_related(root: Path, metadata: dict[str, Any]) -> None:
     related = metadata.get("related_knowledge")
     if not isinstance(related, list):
         raise ContentStageError("content_links_missing", "内容稿缺少已有知识关联")
-    library_root = (root / "library").resolve()
+    library_root = results_root(root)
     if not related:
         if any(library_root.glob("*/*/内容整理.md")):
             raise ContentStageError("content_links_missing", "内容稿缺少已有知识关联")
@@ -185,10 +190,9 @@ def _validate_related(root: Path, metadata: dict[str, Any]) -> None:
         reason = _single_line(item.get("reason"))
         if not title or not path_value or not reason:
             raise ContentStageError("content_links_invalid", "相关知识条目不完整")
-        candidate = (root / Path(path_value)).resolve()
         try:
-            candidate.relative_to(library_root)
-        except ValueError as exc:
+            candidate = resolve_logical_library_handle(root, path_value)
+        except ResultsConfigError as exc:
             raise ContentStageError("content_links_invalid", "相关知识链接越出 Library") from exc
         if candidate.name != "内容整理.md" or not candidate.is_file():
             raise ContentStageError("content_links_invalid", "相关知识链接不存在")

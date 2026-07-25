@@ -233,6 +233,7 @@ def test_publish_is_idempotent_and_builds_classification_tags_and_indexes(
         "原视频.mp4",
         "精选关键帧",
         "附件",
+        "资料信息.yml",
     }
     assert len(list((second / "精选关键帧").iterdir())) == 8
     assert {path.name for path in (second / "附件").iterdir()} == {"完整时间轴.md"}
@@ -270,7 +271,7 @@ def test_publish_is_idempotent_and_builds_classification_tags_and_indexes(
     assert "路径安全 标题" in (index_dir / "待人工复核.md").read_text(encoding="utf-8")
 
 
-def test_publish_rejects_same_title_for_different_video_without_exposing_source_id(
+def test_publish_numbers_same_title_for_different_video_without_exposing_source_id(
     tmp_path: Path,
 ) -> None:
     first_id = make_job(tmp_path, aweme_id="private-first", title="同名标题")
@@ -286,21 +287,69 @@ def test_publish_rejects_same_title_for_different_video_without_exposing_source_
         b"different fixture video"
     )
 
-    with pytest.raises(PublicationError) as error:
-        publish_job(
-            tmp_path,
-            job_id=second_id,
-            category="软件工程",
-            title="同名标题",
-            tags=["测试"],
-        )
+    second = publish_job(
+        tmp_path,
+        job_id=second_id,
+        category="软件工程",
+        title="同名标题",
+        tags=["测试"],
+    )
 
-    assert error.value.code == "library_collision"
+    assert second.name == "同名标题 (2)"
     document = (
         tmp_path / "library" / "软件工程" / "同名标题" / "内容整理.md"
     ).read_text(encoding="utf-8")
     assert "private-first" not in document
     assert "private-second" not in document
+    assert second_id not in (second / "内容整理.md").read_text(encoding="utf-8")
+
+
+def test_publish_keeps_distinct_jobs_separate_even_when_media_bytes_match(
+    tmp_path: Path,
+) -> None:
+    first_id = make_job(tmp_path, aweme_id="private-identical-first", title="重复标题")
+    first = publish_job(
+        tmp_path,
+        job_id=first_id,
+        category="软件工程",
+        title="重复标题",
+        tags=["测试"],
+    )
+    second_id = make_job(tmp_path, aweme_id="private-identical-second", title="重复标题")
+    second = publish_job(
+        tmp_path,
+        job_id=second_id,
+        category="软件工程",
+        title="重复标题",
+        tags=["测试"],
+    )
+
+    assert first.name == "重复标题"
+    assert second.name == "重复标题 (2)"
+
+
+def test_correction_reuses_the_established_human_directory(tmp_path: Path) -> None:
+    source_id = "private-corrected-title"
+    register_collection_item(tmp_path, source_id)
+    job_id = make_job(tmp_path, aweme_id=source_id, title="原始标题")
+    first = publish_job(
+        tmp_path,
+        job_id=job_id,
+        category="软件工程",
+        title="原始标题",
+        tags=["测试"],
+    )
+    corrected = publish_job(
+        tmp_path,
+        job_id=job_id,
+        category="新分类",
+        title="修正后的标题",
+        tags=["测试"],
+    )
+
+    assert corrected == first
+    assert corrected.parts[-2:] == ("软件工程", "原始标题")
+    assert "# 修正后的标题" in (corrected / "内容整理.md").read_text(encoding="utf-8")
 
 
 def test_obsidian_low_quality_publish_preserves_annotations_without_completion(

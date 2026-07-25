@@ -10,6 +10,12 @@ from typing import Any
 
 import yaml
 
+from douyin_knowledge.result_archive import (
+    RESULTS_HANDLE_ROOT,
+    ResultsConfigError,
+    resolve_results_handle,
+)
+
 REQUIRED_ACCEPTANCE_CHECKS = frozenset({"sqlite_integrity", "privacy", "content"})
 
 
@@ -340,6 +346,11 @@ def _path_digest(path: Path) -> str | None:
 
 def _target_path(root: Path, handle: str) -> Path:
     relative = PurePosixPath(_relative_handle(handle))
+    if relative.parts[0] == RESULTS_HANDLE_ROOT:
+        try:
+            return resolve_results_handle(root, relative.as_posix())
+        except ResultsConfigError as exc:
+            raise PublicationStateError(exc.code, str(exc)) from exc
     if relative.parts[0] != "vault":
         candidate = (root / Path(relative.as_posix())).resolve()
         try:

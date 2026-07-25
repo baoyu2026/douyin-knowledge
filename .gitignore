@@ -20,6 +20,7 @@ Thumbs.db
 # Private runtime configuration and credentials
 config/*
 !config/config.example.yml
+!config/results.example.yml
 **/cookies.json
 **/cookies.json.tmp
 **/.cookies.json

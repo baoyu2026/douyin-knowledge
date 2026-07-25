@@ -20,8 +20,8 @@ from app.analyze_video import JOB_ID_PATTERN, atomic_write_text, format_timestam
 from app.collection_registry import update_item_by_job
 from app.content_stage import ValidatedDraft, validate_content_draft
 from app.keyframe_selection import resolve_keyframes
+from douyin_knowledge.result_archive import RESULTS_LAYOUT, results_root
 
-LIBRARY_DIR = Path("library")
 JOBS_DIR = Path("data/jobs")
 INDEX_DIR_NAME = "00-总索引"
 INDEX_FILES = ("全部视频.md", "按主题.md", "最近新增.md", "待人工复核.md")
@@ -130,24 +130,117 @@ def _existing_metadata(path: Path) -> dict[str, Any]:
     return metadata
 
 
-def _is_registered_library_target(root: Path, job_id: str, target: Path) -> bool:
+def _registered_library_target(root: Path, job_id: str) -> Path | None:
     db_path = root / "data" / "knowledge.db"
     if not db_path.is_file():
-        return False
+        return None
     try:
         with sqlite3.connect(db_path) as connection:
             row = connection.execute(
                 "SELECT library_path FROM collection_items WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
-    except sqlite3.Error:
-        return False
+    except sqlite3.Error as exc:
+        raise PublicationError("library_registry_invalid", "无法读取知识条目注册信息") from exc
     if row is None or not row[0]:
-        return False
+        return None
     registered = Path(row[0])
     if not registered.is_absolute():
         registered = root / registered
-    return registered.resolve() == target.resolve()
+    return registered.resolve()
+
+
+def _entry_ref(path: Path) -> str | None:
+    manifest = path / "资料信息.yml"
+    if not manifest.is_file():
+        return None
+    try:
+        payload = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeError, yaml.YAMLError):
+        return None
+    value = payload.get("entry_ref") if isinstance(payload, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def resolve_library_target(
+    root: Path,
+    *,
+    job_id: str,
+    category: str,
+    title: str,
+    source_video: Path,
+) -> Path:
+    root = root.resolve()
+    library_root = results_root(root)
+    safe_category = safe_component(category, field="主分类")
+    safe_title = safe_component(title, field="标题")
+    registered = _registered_library_target(root, job_id)
+    if registered is not None:
+        try:
+            registered.relative_to(library_root)
+        except ValueError:
+            pass
+        else:
+            if registered.exists() and not registered.is_dir():
+                raise PublicationError("library_collision", "已登记的知识条目路径被文件占用")
+            return registered
+
+    category_root = _resolve_inside(
+        library_root / safe_category,
+        library_root,
+        "library_path_invalid",
+    )
+    for index in range(1, 1000):
+        suffix = "" if index == 1 else f" ({index})"
+        stem = safe_title[: 80 - len(suffix)].rstrip(" .-")
+        candidate = _resolve_inside(
+            category_root / f"{stem}{suffix}",
+            library_root,
+            "library_path_invalid",
+        )
+        if not candidate.exists():
+            return candidate
+        if not candidate.is_dir():
+            continue
+        if not any(candidate.iterdir()):
+            return candidate
+        entry_ref = _entry_ref(candidate)
+        if entry_ref == job_id:
+            return candidate
+        existing_video = candidate / "原视频.mp4"
+        try:
+            if (
+                entry_ref is None
+                and existing_video.is_file()
+                and source_video.is_file()
+                and sha256_file(existing_video) == sha256_file(source_video)
+            ):
+                return candidate
+        except OSError:
+            pass
+    raise PublicationError("library_collision", "同分类下的同名知识条目过多")
+
+
+def _write_entry_manifest(
+    target: Path,
+    *,
+    job_id: str,
+    title: str,
+    category: str,
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "entry_ref": job_id,
+        "title": title,
+        "category": category,
+        "layout": RESULTS_LAYOUT,
+        "source_video": "原视频.mp4",
+        "knowledge_note": "内容整理.md",
+        "timeline": "附件/完整时间轴.md",
+        "keyframes": "精选关键帧/",
+    }
+    rendered = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
+    atomic_write_text(target / "资料信息.yml", rendered)
 
 
 def _select_keyframes(
@@ -348,6 +441,7 @@ def _verify_library_publication(
     target: Path, source_video: Path, selected_frames: list[Path]
 ) -> None:
     document = target / "内容整理.md"
+    information = target / "资料信息.yml"
     video = target / "原视频.mp4"
     timeline = target / "附件" / "完整时间轴.md"
     frames = [
@@ -358,6 +452,7 @@ def _verify_library_publication(
     expected_names = {path.name for path in selected_frames}
     if (
         not document.is_file()
+        or not information.is_file()
         or not timeline.is_file()
         or not video.is_file()
         or sha256_file(video) != sha256_file(source_video)
@@ -454,15 +549,16 @@ def publish_job(
     if quality_mode == "high-quality" and selected_vault is None:
         raise PublicationError("obsidian_vault_required", "高质量发布必须写入 Obsidian")
 
-    safe_category = safe_component(category, field="主分类", slug=True)
+    safe_category = safe_component(category, field="主分类")
     display_title = _single_line(title) or _single_line(job.get("title")) or job_id
-    title_slug = safe_component(display_title, field="标题", slug=True)
     normalized_tags = normalize_tags(tags)
-    library_root = (root / LIBRARY_DIR).resolve()
-    target = _resolve_inside(
-        library_root / safe_category / title_slug,
-        library_root,
-        "library_path_invalid",
+    library_root = results_root(root)
+    target = resolve_library_target(
+        root,
+        job_id=job_id,
+        category=safe_category,
+        title=display_title,
+        source_video=source_video,
     )
     document_path = target / "内容整理.md"
     existing = _existing_metadata(document_path)
@@ -475,7 +571,7 @@ def publish_job(
             )
         except OSError as exc:
             raise PublicationError("library_collision", "无法验证已有知识条目") from exc
-        if not same_media and not _is_registered_library_target(root, job_id, target):
+        if not same_media and _entry_ref(target) != job_id:
             raise PublicationError("library_collision", "同名知识条目属于不同视频")
     added_at = _single_line(existing.get("新增时间")) or datetime.now(UTC).isoformat()
     selected_frames = _select_keyframes(analysis_dir, manifest, draft)
@@ -518,6 +614,12 @@ def publish_job(
         _atomic_copy(frame, frame_target / frame.name)
     _atomic_copy(timeline, target / "附件" / "完整时间轴.md")
     atomic_write_text(document_path, content)
+    _write_entry_manifest(
+        target,
+        job_id=job_id,
+        title=display_title,
+        category=safe_category,
+    )
     generate_indexes(library_root)
     _verify_library_publication(target, source_video, selected_frames)
     update_item_by_job(
