@@ -48,7 +48,8 @@ def _fixture(root: Path) -> str:
     analysis = job_dir / "analysis"
     keyframes = analysis / "keyframes"
     keyframes.mkdir(parents=True)
-    (job_dir / "source.mp4").write_bytes(b"fixture-video")
+    source = job_dir / "source.mp4"
+    source.write_bytes(b"fixture-video")
     items = []
     for index in range(3):
         name = f"frame-{index + 1:03d}.jpg"
@@ -57,8 +58,13 @@ def _fixture(root: Path) -> str:
     (analysis / "manifest.json").write_text(
         json.dumps(
             {
-                "source": {"duration_seconds": 15.0},
+                "analysis_version": 2,
+                "source": {
+                    "duration_seconds": 15.0,
+                    "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                },
                 "keyframes": {"items": items},
+                "coverage_report": {"scan_reached_end": True, "tail_frame_readable": True},
             },
             ensure_ascii=False,
         ),
@@ -74,6 +80,9 @@ def _fixture(root: Path) -> str:
         "---\n标题: 已有参考知识\n主分类: 参考分类\n标签: [参考]\n---\n\n# 已有参考知识\n",
         encoding="utf-8",
     )
+    (analysis / "audio.wav").write_bytes(b"fixture-audio")
+    (analysis / "transcript.json").write_text("{}", encoding="utf-8")
+    (analysis / "ocr.json").write_text("{}", encoding="utf-8")
     with sqlite3.connect(root / "data" / "knowledge.db") as connection:
         connection.execute(
             "UPDATE collection_items SET status = 'analyzed' WHERE job_id = ?", (job_id,)

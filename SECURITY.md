@@ -15,7 +15,9 @@ can alter credentials, private files, SQLite state, or publication targets.
 ## Security Boundaries
 
 - Credentials belong only in the private instance `config` directory.
-- AI workers receive only exported bounded packets and schemas.
+- AI workers receive only exported bounded packets, redacted evidence chunks,
+  selected keyframes, and schemas. Keyframe pixels are not automatically redacted;
+  cloud-hosted workers may transmit them under the host's own privacy policy.
 - The CLI owns SQLite, identity, validation, rendering, publication, and acceptance.
 - Login, synchronization, analysis/download, canary, and publication require explicit
   confirmation.

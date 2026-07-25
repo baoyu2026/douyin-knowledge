@@ -7,11 +7,14 @@ on:
 jobs:
   test:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: "pip"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install ".[dev]"
@@ -24,3 +27,7 @@ jobs:
             [void][scriptblock]::Create((Get-Content -Raw -LiteralPath $_.FullName))
           }
       - run: python -m build
+      - shell: powershell
+        run: |
+          $wheel = Get-ChildItem dist -Filter *.whl | Select-Object -First 1
+          .\scripts\test-distribution.ps1 -WheelPath $wheel.FullName -Python python

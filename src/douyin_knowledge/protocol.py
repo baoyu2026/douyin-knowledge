@@ -11,6 +11,7 @@ from typing import Any
 
 from app.analyze_video import JOB_ID_PATTERN
 from app.content_packet import ContentPacketError, build_content_packet
+from app.evidence_bundle import EvidenceBundleError, build_evidence_bundle
 from app.structured_content import (
     StructuredContentError,
     _analysis_inputs,
@@ -20,6 +21,7 @@ from app.structured_content import (
     validate_structured_payload,
 )
 from douyin_knowledge.contracts import CliError
+from douyin_knowledge.review import latest_candidate_decision, latest_job_review
 
 PROTOCOL_VERSION = 1
 CANDIDATE_FIELDS = (
@@ -117,9 +119,10 @@ def export_packet(root: Path, job_ref: str) -> dict[str, Any]:
     try:
         packet = build_content_packet(root, job_ref, packet_path)
         _inputs, frames, _duration = _analysis_inputs(root, job_ref)
+        evidence = build_evidence_bundle(root, job_ref, task, frames)
         catalog = _library_catalog(root)
         content_schema, _effective_path = _effective_schema(root, job_ref, catalog, frames)
-    except (ContentPacketError, StructuredContentError) as exc:
+    except (ContentPacketError, EvidenceBundleError, StructuredContentError) as exc:
         raise CliError(
             getattr(exc, "code", "packet_export_failed"),
             "content packet prerequisites are incomplete",
@@ -129,8 +132,16 @@ def export_packet(root: Path, job_ref: str) -> dict[str, Any]:
     _atomic_json(schema_path, candidate_schema)
     schema_hash = _sha256(schema_path)
     candidate_handle = _handle(root, task / "candidate-v1.json")
+    evidence_manifest_handle = _handle(root, evidence.manifest_path)
+    evidence_chunk_handles = [_handle(root, path) for path in evidence.chunk_paths]
+    visual_handles = [_handle(root, path) for path in evidence.visual_paths]
     instructions = (
-        "Read only content-packet.json and candidate.schema.json in this directory.\n"
+        "Read only content-packet.json, candidate.schema.json, evidence-manifest.json, "
+        "and the exact evidence chunk and visual files listed by that manifest.\n"
+        "Read every evidence chunk before writing the candidate; chunks contain the complete "
+        "sanitized ASR/OCR/timeline evidence and must not be silently skipped.\n"
+        "Inspect the listed visual files before writing visual_evidence. If this host cannot "
+        "read images, stop and report the capability gap instead of fabricating visual claims.\n"
         "Write one pure JSON object to candidate-v1.json.tmp, close it, then rename it "
         "to candidate-v1.json.\n"
         f"Set job_ref to {job_ref} and packet_sha256 to {packet.sha256}.\n"
@@ -143,6 +154,9 @@ def export_packet(root: Path, job_ref: str) -> dict[str, Any]:
         "job_ref": job_ref,
         "packet_sha256": packet.sha256,
         "candidate_schema_sha256": schema_hash,
+        "evidence_manifest_sha256": _sha256(evidence.manifest_path),
+        "evidence_chunks": evidence.payload["chunks"],
+        "visuals": evidence.payload["visuals"],
         "candidate_handle": candidate_handle,
     }
     _atomic_json(manifest_path, manifest)
@@ -155,6 +169,10 @@ def export_packet(root: Path, job_ref: str) -> dict[str, Any]:
         "estimated_tokens": packet.estimated_tokens,
         "candidate_schema_handle": _handle(root, schema_path),
         "candidate_schema_sha256": schema_hash,
+        "evidence_manifest_handle": evidence_manifest_handle,
+        "evidence_manifest_sha256": _sha256(evidence.manifest_path),
+        "evidence_chunk_handles": evidence_chunk_handles,
+        "visual_handles": visual_handles,
         "worker_instructions_handle": _handle(root, instructions_path),
         "candidate_output_handle": candidate_handle,
     }
@@ -318,15 +336,52 @@ def import_candidate(root: Path, job_ref: str, supplied: Path) -> dict[str, Any]
     raw_path = root / "orchestration" / "structured-content" / job_ref / "response-v1.json"
     draft_path = root / "orchestration" / "content-drafts" / f"{job_ref}-content.md"
     already_staged = raw_path.is_file() and draft_path.is_file()
-    if accepted_path.is_file():
-        accepted = _load_object(accepted_path, "candidate_json_invalid")
-        if accepted != candidate:
+    replaced = False
+    candidate_hash = _sha256(candidate_path)
+    latest_review = latest_job_review(root / "data" / "knowledge.db", job_ref=job_ref)
+    official_replacement = bool(
+        accepted_path.resolve() == candidate_path.resolve()
+        and latest_review is not None
+        and latest_review[0] != candidate_hash
+    )
+    if official_replacement and latest_review is not None:
+        if latest_review[1] != "reject":
+            replacement_hash = _quarantine(root, job_ref, candidate_path)
+            history = root / "quarantine" / "candidates" / job_ref / f"{latest_review[0]}.json"
+            if replacement_hash is not None and history.is_file():
+                _atomic_bytes(accepted_path, history.read_bytes())
             raise CliError(
                 "candidate_already_imported",
                 "a different candidate has already been imported",
-                "inspect the authoritative status before starting a new content run",
+                "reject the current candidate before importing one replacement",
             )
-        reused = already_staged
+        replaced = True
+    if accepted_path.is_file():
+        accepted = _load_object(accepted_path, "candidate_json_invalid")
+        if accepted != candidate:
+            accepted_hash = _sha256(accepted_path)
+            decision = latest_candidate_decision(
+                root / "data" / "knowledge.db",
+                job_ref=job_ref,
+                candidate_sha256=accepted_hash,
+            )
+            if decision != "reject":
+                raise CliError(
+                    "candidate_already_imported",
+                    "a different candidate has already been imported",
+                    "reject the current candidate before importing one replacement",
+                )
+            if _quarantine(root, job_ref, accepted_path) != accepted_hash:
+                raise CliError(
+                    "candidate_history_unavailable",
+                    "the rejected candidate could not be preserved for audit",
+                    "correct private storage access before importing the replacement",
+                )
+            _atomic_json(accepted_path, candidate)
+            replaced = True
+            reused = False
+        else:
+            reused = already_staged and not replaced
     else:
         _atomic_json(accepted_path, candidate)
         reused = False
@@ -344,6 +399,7 @@ def import_candidate(root: Path, job_ref: str, supplied: Path) -> dict[str, Any]
         "job_ref": job_ref,
         "status": "staged",
         "reused": reused,
+        "replaced": replaced,
         "candidate_sha256": candidate_hash,
         "candidate_handle": _handle(root, accepted_path),
         "draft_handle": _handle(root, draft_path),

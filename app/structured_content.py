@@ -26,6 +26,7 @@ from app.content_stage import (
     ValidatedDraft,
     validate_content_draft,
 )
+from app.keyframe_selection import resolve_keyframes
 from app.security import GateError, harden_private_project_directory
 
 STRUCTURED_SCHEMA_VERSION = 1
@@ -222,20 +223,13 @@ def _analysis_inputs(root: Path, job_id: str) -> tuple[dict[str, str], list[Path
             raise StructuredContentError("structured_input_missing", f"{label}为空")
         values[label] = text
     manifest = _load_json(analysis / "manifest.json", "structured_input_invalid")
-    items = (manifest.get("keyframes") or {}).get("items") or []
-    frames = [
-        analysis / str(item.get("file"))
-        for item in items
-        if isinstance(item, dict) and isinstance(item.get("file"), str)
-    ]
-    frames = [path.resolve() for path in frames if path.is_file()]
-    if len(frames) < 3:
-        raise StructuredContentError("structured_input_missing", "关键帧不足")
-    count = min(8, len(frames))
-    indices = [round(index * (len(frames) - 1) / (count - 1)) for index in range(count)]
-    selected = [frames[index] for index in dict.fromkeys(indices)]
+    try:
+        selected = resolve_keyframes(analysis, manifest, max_count=8, min_count=3)
+    except ValueError as exc:
+        raise StructuredContentError("structured_input_missing", "关键帧不足") from exc
+    frames = [path for _item, path in selected]
     duration = float((manifest.get("source") or {}).get("duration_seconds") or 0)
-    return values, selected, duration
+    return values, frames, duration
 
 
 def _library_catalog(root: Path) -> dict[str, Path]:

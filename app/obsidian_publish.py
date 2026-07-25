@@ -65,6 +65,8 @@ def configured_vault(root: Path) -> Path | None:
     except (OSError, yaml.YAMLError) as exc:
         raise PublicationError("obsidian_config_invalid", "无法读取 Obsidian 配置") from exc
     raw = config.get("vault") if isinstance(config, dict) else None
+    if raw is None:
+        return None
     if not isinstance(raw, str) or not raw.strip():
         raise PublicationError("obsidian_config_invalid", "Obsidian 配置缺少 Vault 路径")
     candidate = Path(raw).expanduser()

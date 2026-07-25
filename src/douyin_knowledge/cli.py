@@ -13,6 +13,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from douyin_knowledge import __version__
 from douyin_knowledge.contracts import CliError, failure, success
 from douyin_knowledge.operations import run_job
@@ -255,11 +257,30 @@ def _status(root: Path) -> dict[str, Any]:
             digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
             if latest.get((job_ref, digest)) != "approve":
                 pending_review += 1
+    active_stage = None
+    active_job_ref = None
+    active_runs: list[dict[str, str]] = []
+    for lock in sorted((root / "data" / "tasks").glob("*/run.lock")):
+        job_ref = lock.parent.name
+        stage = "download"
+        checkpoint = lock.parent / "run-checkpoint.json"
+        try:
+            state = json.loads(checkpoint.read_text(encoding="utf-8"))
+            if isinstance(state, dict) and isinstance(state.get("current_stage"), str):
+                stage = str(state["current_stage"])
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            pass
+        active_runs.append({"job_ref": job_ref, "stage": stage})
+    if active_runs:
+        active_job_ref = active_runs[0]["job_ref"]
+        active_stage = active_runs[0]["stage"]
     data = {
         "total": sum(counts.values()),
         "by_status": dict(sorted(counts.items())),
         "sqlite_integrity": integrity,
-        "active_stage": None,
+        "active_stage": active_stage,
+        "active_job_ref": active_job_ref,
+        "active_runs": active_runs,
         "pending_review": pending_review,
         "publication": publication,
     }
@@ -272,6 +293,12 @@ def _plan(root: Path, limit: int) -> dict[str, Any]:
             "invalid_limit",
             "limit must be between 1 and 5",
             "choose a limit from 1 to 5 after a successful canary",
+        )
+    if limit > 1 and not _canary_completed(root):
+        raise CliError(
+            "canary_required",
+            "batch planning requires a successful current-version canary",
+            "run one confirmed no-publish canary before planning a batch",
         )
     database = root / "data" / "knowledge.db"
     items: list[dict[str, Any]] = []
@@ -311,11 +338,63 @@ def _plan(root: Path, limit: int) -> dict[str, Any]:
     )
 
 
+def _canary_path(root: Path) -> Path:
+    return root / "data" / "safety" / "canary-v1.json"
+
+
+def _canary_completed(root: Path) -> bool:
+    try:
+        payload = json.loads(_canary_path(root).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return bool(
+        isinstance(payload, dict)
+        and payload.get("status") == "packet_ready"
+        and payload.get("version") == __version__
+    )
+
+
+def _record_canary(root: Path, data: dict[str, Any]) -> None:
+    _atomic_text(
+        _canary_path(root),
+        json.dumps(
+            {
+                "schema_version": 1,
+                "version": __version__,
+                "status": data.get("status"),
+                "job_ref": data.get("job_ref"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+    )
+
+
+def _publishing_enabled(root: Path) -> bool:
+    path = root / "config" / "config.yml"
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise CliError(
+            "config_invalid",
+            "the runtime configuration could not be read",
+            "initialize or repair config/config.yml before publishing",
+        ) from exc
+    publishing = payload.get("publishing") if isinstance(payload, dict) else None
+    return bool(isinstance(publishing, dict) and publishing.get("enabled") is True)
+
+
 def _doctor(root: Path) -> dict[str, Any]:
     from app.analyze_video import resolve_ffmpeg
     from app.obsidian_publish import configured_vault
     from app.pipeline import _check_playwright_chromium
-    from app.security import validate_downloader_config, windows_acl_metadata
+    from app.security import (
+        GateError,
+        validate_cookie_file,
+        validate_downloader_config,
+        windows_acl_metadata,
+    )
 
     database = root / "data" / "knowledge.db"
     config = root / "config"
@@ -328,7 +407,11 @@ def _doctor(root: Path) -> dict[str, Any]:
         downloader_config_valid = False
     try:
         browser_state = _check_playwright_chromium(active_probe=False)
-        browser_runtime = browser_state in {"available", "available_active_probe"}
+        browser_runtime = bool(
+            browser_state
+            and browser_state != "package_available_browser_missing"
+            and not str(browser_state).startswith("unavailable:")
+        )
     except Exception:
         browser_runtime = False
     try:
@@ -368,12 +451,20 @@ def _doctor(root: Path) -> dict[str, Any]:
         )
     except Exception:
         vault_configured = False
+    cookie_valid = False
+    if cookie.is_file():
+        try:
+            validate_cookie_file(cookie)
+            cookie_valid = True
+        except (GateError, OSError):
+            cookie_valid = False
     checks = {
         "initialized": initialized,
         "database_present": database.is_file(),
         "database_integrity": database_integrity,
         "downloader_config_valid": downloader_config_valid,
         "cookie_present": cookie.is_file(),
+        "cookie_valid": cookie_valid,
         "private_acl": acl_private,
         "structured_schema_present": (
             root / "schemas" / "structured-content-v1.schema.json"
@@ -389,7 +480,7 @@ def _doctor(root: Path) -> dict[str, Any]:
         actions.append("install_playwright_chromium")
     if not checks["ffmpeg_available"]:
         actions.append("install_ffmpeg")
-    if not checks["cookie_present"]:
+    if not checks["cookie_valid"]:
         actions.append("run_confirmed_login")
     if not checks["asr_model_present"]:
         actions.append("install_local_asr_model")
@@ -402,7 +493,7 @@ def _doctor(root: Path) -> dict[str, Any]:
         and browser_runtime
         and acl_private
     )
-    ready_for_sync = ready_for_login and checks["cookie_present"]
+    ready_for_sync = ready_for_login and checks["cookie_valid"]
     ready_for_analysis = ffmpeg_available and asr_model_present
     return success(
         "doctor",
@@ -477,6 +568,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--stop-after", choices=("download", "analysis", "packet", "staging"), required=True
     )
     run.add_argument("--confirm", action="store_true")
+    run.add_argument("--retry-after-fix", action="store_true")
     run.add_argument("--json", action="store_true")
     for name in ("login", "sync"):
         command = subparsers.add_parser(name)
@@ -564,7 +656,12 @@ def main(argv: list[str] | None = None) -> int:
         elif operation == "run":
             if not args.confirm:
                 _confirmation(operation)
-            data = run_job(root, job_ref=str(args.job_ref), stop_after=str(args.stop_after))
+            data = run_job(
+                root,
+                job_ref=str(args.job_ref),
+                stop_after=str(args.stop_after),
+                retry_after_fix=bool(args.retry_after_fix),
+            )
             payload = success(
                 "run",
                 data,
@@ -573,6 +670,12 @@ def main(argv: list[str] | None = None) -> int:
         elif operation == "publish":
             if not args.confirm:
                 _confirmation(operation)
+            if not _publishing_enabled(root):
+                raise CliError(
+                    "publishing_disabled",
+                    "publishing is disabled in the runtime configuration",
+                    "set publishing.enabled to true after reviewing the configured targets",
+                )
             data = publish_reviewed_job(
                 root,
                 job_ref=str(args.job_ref),
@@ -618,6 +721,8 @@ def main(argv: list[str] | None = None) -> int:
                     stop_after="packet",
                 )
             )
+            if data.get("status") == "packet_ready":
+                _record_canary(root, data)
             payload = success(
                 "canary",
                 data,

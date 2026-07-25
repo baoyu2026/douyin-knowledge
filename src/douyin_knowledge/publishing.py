@@ -17,7 +17,7 @@ from douyin_knowledge.publication import (
     reconcile_publications,
     seal_publication_targets,
 )
-from douyin_knowledge.review import approved_candidate
+from douyin_knowledge.review import approved_candidate, require_current_candidate
 
 PRIVATE_PATTERNS = (
     re.compile(r"(?i)\b(cookie|sessionid?|signature|request[_ -]?url)\b"),
@@ -50,6 +50,7 @@ def publish_reviewed_job(
 ) -> dict[str, Any]:
     root = root.resolve()
     database = root / "data" / "knowledge.db"
+    require_current_candidate(root, job_ref)
     if not approved_candidate(root, database, job_ref):
         raise CliError(
             "review_approval_required",

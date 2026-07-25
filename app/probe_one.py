@@ -358,6 +358,9 @@ def write_job_state(job_dir: Path, result: CollectResult) -> None:
     item = result.item
     author_value = item.get("author")
     author = author_value if isinstance(author_value, dict) else {}
+    video_value = item.get("video")
+    video = video_value if isinstance(video_value, dict) else {}
+    duration_ms = item.get("duration")
     payload = {
         "schema_version": 1,
         "job_id": stable_job_id(item),
@@ -368,6 +371,15 @@ def write_job_state(job_dir: Path, result: CollectResult) -> None:
         },
         "title": str(item.get("desc") or "").strip(),
         "author": str(author.get("nickname") or "").strip(),
+        "expected_media": {
+            "duration_seconds": (
+                round(float(duration_ms) / 1000, 3)
+                if isinstance(duration_ms, (int, float)) and duration_ms > 0
+                else None
+            ),
+            "width": int(video.get("width") or 0) or None,
+            "height": int(video.get("height") or 0) or None,
+        },
     }
     _atomic_json(job_dir / "job.json", payload)
 
@@ -395,12 +407,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def extract_standard_play_url(item: Mapping[str, Any]) -> str | None:
-    video_value = item.get("video")
-    video = video_value if isinstance(video_value, dict) else {}
-    play_addr = video.get("play_addr")
-    if not isinstance(play_addr, dict):
-        return None
+def _https_url(play_addr: Mapping[str, Any]) -> str | None:
     urls = play_addr.get("url_list")
     if not isinstance(urls, list):
         return None
@@ -414,6 +421,43 @@ def extract_standard_play_url(item: Mapping[str, Any]) -> str | None:
         except ValueError:
             continue
     return None
+
+
+def _quality_score(entry: Mapping[str, Any]) -> tuple[int, int, int] | None:
+    play_addr_value = entry.get("play_addr")
+    play_addr = play_addr_value if isinstance(play_addr_value, dict) else {}
+    try:
+        width = int(play_addr.get("width") or entry.get("width") or 0)
+        height = int(play_addr.get("height") or entry.get("height") or 0)
+        bit_rate = int(entry.get("bit_rate") or 0)
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0 or bit_rate <= 0 or _https_url(play_addr) is None:
+        return None
+    return min(width, height), width * height, bit_rate
+
+
+def extract_standard_play_url(item: Mapping[str, Any]) -> str | None:
+    video_value = item.get("video")
+    video = video_value if isinstance(video_value, dict) else {}
+    bit_rates = video.get("bit_rate")
+    if isinstance(bit_rates, list):
+        ranked = [
+            (score, entry)
+            for entry in bit_rates
+            if isinstance(entry, dict) and (score := _quality_score(entry)) is not None
+        ]
+        if ranked:
+            _score, selected = max(ranked, key=lambda item: item[0])
+            selected_addr = selected.get("play_addr")
+            if isinstance(selected_addr, dict):
+                selected_url = _https_url(selected_addr)
+                if selected_url:
+                    return selected_url
+    play_addr = video.get("play_addr")
+    if not isinstance(play_addr, dict):
+        return None
+    return _https_url(play_addr)
 
 
 def _is_allowed_media_url(url: str) -> bool:

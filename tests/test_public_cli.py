@@ -124,7 +124,16 @@ def test_doctor_reports_safe_capability_matrix(
     database = tmp_path / "data" / "knowledge.db"
     with sqlite3.connect(database) as connection:
         connection.execute("CREATE TABLE fixture(value TEXT)")
-    (tmp_path / "config" / "cookies.json").write_text("private", encoding="utf-8")
+    (tmp_path / "config" / "cookies.json").write_text(
+        json.dumps(
+            {
+                "ttwid": "private-one",
+                "odin_tt": "private-two",
+                "passport_csrf_token": "private-three",
+            }
+        ),
+        encoding="utf-8",
+    )
     model = (
         tmp_path
         / "data"

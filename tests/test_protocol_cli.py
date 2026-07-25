@@ -48,14 +48,27 @@ def test_packet_export_is_bounded_safe_and_self_describing(
     packet_path = tmp_path / data["packet_handle"]
     schema_path = tmp_path / data["candidate_schema_handle"]
     instructions_path = tmp_path / data["worker_instructions_handle"]
+    evidence_manifest_path = tmp_path / data["evidence_manifest_handle"]
     assert packet_path.is_file()
     assert schema_path.is_file()
     assert instructions_path.is_file()
+    assert evidence_manifest_path.is_file()
+    assert data["evidence_chunk_handles"]
+    assert len(data["visual_handles"]) == 3
+    assert all((tmp_path / handle).is_file() for handle in data["evidence_chunk_handles"])
+    assert all((tmp_path / handle).is_file() for handle in data["visual_handles"])
     packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    evidence_manifest = json.loads(evidence_manifest_path.read_text(encoding="utf-8"))
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     assert packet["job_ref"] == job_ref
+    assert evidence_manifest["complete_sanitized_evidence"] is True
+    assert evidence_manifest["record_count"] > 0
+    assert [item["sha256"] for item in evidence_manifest["visuals"]] == [
+        item["sha256"] for item in packet["selected_keyframes"]
+    ]
     assert "job_id" not in packet
     assert data["packet_sha256"]
+    assert data["evidence_manifest_sha256"]
     assert schema["required"] == [
         "protocol_version",
         "schema_version",
@@ -64,6 +77,9 @@ def test_packet_export_is_bounded_safe_and_self_describing(
         "content",
     ]
     assert str(tmp_path).casefold() not in "\n".join(all_strings(payload)).casefold()
+    instructions = instructions_path.read_text(encoding="utf-8")
+    assert "Read every evidence chunk" in instructions
+    assert "cannot read images" in instructions
 
 
 def test_candidate_import_validates_provenance_and_stages_content(

@@ -6,6 +6,6 @@ include pytest.ini
 recursive-include config *.yml
 recursive-include schemas *.json
 recursive-include scripts *.ps1
-recursive-include skills *.md *.yaml
+recursive-include skills *.md *.yaml *.ps1
 recursive-include tests *.py *.json
 include vendor/douyin-downloader/LICENSE

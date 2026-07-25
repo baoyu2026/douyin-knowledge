@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-DEFAULT_PIPELINE_VERSION = "1"
+DEFAULT_PIPELINE_VERSION = "2"
 PIPELINE_VERSION = DEFAULT_PIPELINE_VERSION
 PROCESSABLE_STATUSES = frozenset({"new", "failed", "incomplete", "downloaded", "analyzed"})
 

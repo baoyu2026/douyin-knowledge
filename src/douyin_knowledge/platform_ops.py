@@ -41,6 +41,20 @@ def _gate_error(operation: str, exc: Exception) -> CliError:
     )
 
 
+def _sync_favorite_projection(root: Path) -> dict[str, Any]:
+    """Update the optional Vault projection without invalidating a completed snapshot."""
+    from app.obsidian_publish import configured_vault, sync_favorite_states
+
+    try:
+        vault = configured_vault(root)
+        if vault is None:
+            return {"favorite_state_sync": "not_configured", "favorite_state_updates": 0}
+        updates = sync_favorite_states(root, vault)
+    except Exception:
+        return {"favorite_state_sync": "blocked", "favorite_state_updates": 0}
+    return {"favorite_state_sync": "completed", "favorite_state_updates": updates}
+
+
 def login(root: Path) -> dict[str, Any]:
     root = root.resolve()
     temporary = root / "config" / "cookies.json.tmp"
@@ -136,7 +150,12 @@ async def _sync_collection(root: Path) -> dict[str, Any]:
             "collection synchronization stopped safely",
             "inspect the private log and retry sync once",
         ) from exc
-    return {"snapshot_items": total, "new_snapshot_items": seen, "downloaded": 0}
+    return {
+        "snapshot_items": total,
+        "new_snapshot_items": seen,
+        "downloaded": 0,
+        **_sync_favorite_projection(root),
+    }
 
 
 def sync(root: Path) -> dict[str, Any]:

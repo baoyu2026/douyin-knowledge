@@ -16,6 +16,7 @@ from douyin_knowledge.operations import _run_private, run_job
 from douyin_knowledge.paths import default_instance_root, repository_root
 from douyin_knowledge.platform_ops import (
     _sync_collection,
+    _sync_favorite_projection,
     install_asr_model,
     login,
     sqlite_integrity,
@@ -168,8 +169,36 @@ def test_collection_sync_consumes_all_pages_without_media_download(
 
     result = asyncio.run(_sync_collection(tmp_path))
 
-    assert result == {"snapshot_items": 3, "new_snapshot_items": 3, "downloaded": 0}
+    assert result == {
+        "snapshot_items": 3,
+        "new_snapshot_items": 3,
+        "downloaded": 0,
+        "favorite_state_sync": "not_configured",
+        "favorite_state_updates": 0,
+    }
     assert observed == [("0", 1), ("next", 2)]
+
+
+def test_optional_favorite_projection_updates_or_blocks_without_failing_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = tmp_path / "vault"
+    monkeypatch.setattr("app.obsidian_publish.configured_vault", lambda _root: vault)
+    monkeypatch.setattr("app.obsidian_publish.sync_favorite_states", lambda _root, _vault: 2)
+
+    assert _sync_favorite_projection(tmp_path) == {
+        "favorite_state_sync": "completed",
+        "favorite_state_updates": 2,
+    }
+
+    def fail_projection(_root, _vault):
+        raise OSError("private vault failure")
+
+    monkeypatch.setattr("app.obsidian_publish.sync_favorite_states", fail_projection)
+    assert _sync_favorite_projection(tmp_path) == {
+        "favorite_state_sync": "blocked",
+        "favorite_state_updates": 0,
+    }
 
 
 def test_sqlite_integrity_and_private_subprocess_error_mapping(

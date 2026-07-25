@@ -19,6 +19,7 @@ import yaml
 from app.analyze_video import JOB_ID_PATTERN, atomic_write_text, format_timestamp, sha256_file
 from app.collection_registry import update_item_by_job
 from app.content_stage import ValidatedDraft, validate_content_draft
+from app.keyframe_selection import resolve_keyframes
 
 LIBRARY_DIR = Path("library")
 JOBS_DIR = Path("data/jobs")
@@ -150,25 +151,13 @@ def _is_registered_library_target(root: Path, job_id: str, target: Path) -> bool
 
 
 def _select_keyframes(analysis_dir: Path, manifest: dict[str, Any]) -> list[Path]:
-    raw_items = (manifest.get("keyframes") or {}).get("items") or []
-    candidates: list[Path] = []
-    for item in raw_items:
-        if not isinstance(item, dict) or not isinstance(item.get("file"), str):
-            continue
-        candidate = _resolve_inside(
-            analysis_dir / item["file"],
-            analysis_dir / "keyframes",
-            "keyframe_outside_analysis",
-        )
-        if candidate.is_file() and candidate.suffix.lower() in {".jpg", ".jpeg", ".png"}:
-            candidates.append(candidate)
-    if len(candidates) < 3:
-        raise PublicationError("insufficient_keyframes", "发布至少需要 3 张有效关键帧")
-    count = min(8, len(candidates))
-    if count == 1:
-        return candidates[:1]
-    indices = [round(index * (len(candidates) - 1) / (count - 1)) for index in range(count)]
-    return [candidates[index] for index in dict.fromkeys(indices)]
+    try:
+        selected = resolve_keyframes(analysis_dir, manifest, max_count=8, min_count=3)
+    except ValueError as exc:
+        raise PublicationError(
+            "insufficient_keyframes", "发布至少需要 3 张有效关键帧"
+        ) from exc
+    return [path for _item, path in selected]
 
 
 def _transcript_evidence(transcript: dict[str, Any]) -> list[dict[str, Any]]:

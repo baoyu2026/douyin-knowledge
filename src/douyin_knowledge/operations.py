@@ -12,10 +12,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.analyze_video import JOB_ID_PATTERN
+from app.analyze_video import JOB_ID_PATTERN, load_current_manifest
 from app.content_stage import ContentStageError, validate_content_draft
 from douyin_knowledge.contracts import CliError
 from douyin_knowledge.protocol import export_packet
+from douyin_knowledge.review import require_current_candidate
 
 STALE_LEASE_SECONDS = 2 * 60 * 60
 
@@ -124,6 +125,24 @@ def _complete_stage(
         "completed_at": _now(),
     }
     checkpoint.update({"status": "running", "current_stage": stage, "error": None})
+    failures = checkpoint.setdefault("failures", {})
+    for key in [key for key in failures if key.startswith(f"{stage}:")]:
+        failures.pop(key, None)
+    checkpoint["same_failure_count"] = 0
+    _atomic_json(checkpoint_path, checkpoint)
+
+
+def _start_stage(
+    checkpoint_path: Path, checkpoint: dict[str, Any], stage: str
+) -> None:
+    checkpoint.update(
+        {
+            "status": "running",
+            "current_stage": stage,
+            "started_at": _now(),
+            "error": None,
+        }
+    )
     _atomic_json(checkpoint_path, checkpoint)
 
 
@@ -238,7 +257,8 @@ def _download(root: Path, job_ref: str, row: sqlite3.Row) -> bool:
 
 def _analyze(root: Path, job_ref: str) -> bool:
     manifest = root / "data" / "jobs" / job_ref / "analysis" / "manifest.json"
-    if manifest.is_file() and manifest.stat().st_size > 0:
+    source = root / "data" / "jobs" / job_ref / "source.mp4"
+    if load_current_manifest(source, manifest.parent) is not None:
         return True
     _run_private(
         [
@@ -263,14 +283,38 @@ def _analyze(root: Path, job_ref: str) -> bool:
     return False
 
 
-def run_job(root: Path, *, job_ref: str, stop_after: str) -> dict[str, Any]:
+def run_job(
+    root: Path,
+    *,
+    job_ref: str,
+    stop_after: str,
+    retry_after_fix: bool = False,
+) -> dict[str, Any]:
     root = root.resolve()
     row = _item(root / "data" / "knowledge.db", job_ref)
     checkpoint_path = root / "data" / "tasks" / job_ref / "run-checkpoint.json"
     with _JobLease(root, job_ref):
         checkpoint = _load_checkpoint(checkpoint_path, job_ref)
+        if checkpoint.get("status") == "paused" and int(
+            checkpoint.get("same_failure_count") or 0
+        ) >= 2:
+            if not retry_after_fix:
+                raise CliError(
+                    "run_failure_limit_reached",
+                    "the selected job reached the repeated failure limit",
+                    "correct the reported prerequisite, then retry with --retry-after-fix",
+                )
+            checkpoint.update(
+                {
+                    "status": "paused",
+                    "same_failure_count": 0,
+                    "failure_limit_reset_at": _now(),
+                }
+            )
+            _atomic_json(checkpoint_path, checkpoint)
         stage = "download"
         try:
+            _start_stage(checkpoint_path, checkpoint, stage)
             download_reused = _download(root, job_ref, row)
             _complete_stage(
                 checkpoint_path, checkpoint, "download", reused=download_reused
@@ -285,6 +329,7 @@ def run_job(root: Path, *, job_ref: str, stop_after: str) -> dict[str, Any]:
                 result = {**common, "status": "downloaded"}
             else:
                 stage = "analysis"
+                _start_stage(checkpoint_path, checkpoint, stage)
                 analysis_reused = _analyze(root, job_ref)
                 _complete_stage(
                     checkpoint_path, checkpoint, "analysis", reused=analysis_reused
@@ -294,6 +339,7 @@ def run_job(root: Path, *, job_ref: str, stop_after: str) -> dict[str, Any]:
                     result = {**common, "status": "analyzed"}
                 else:
                     stage = "packet"
+                    _start_stage(checkpoint_path, checkpoint, stage)
                     packet = export_packet(root, job_ref)
                     _complete_stage(checkpoint_path, checkpoint, "packet", reused=False)
                     common["packet_handle"] = packet["packet_handle"]
@@ -303,6 +349,7 @@ def run_job(root: Path, *, job_ref: str, stop_after: str) -> dict[str, Any]:
                         result = {**common, "status": "packet_ready"}
                     else:
                         stage = "staging"
+                        _start_stage(checkpoint_path, checkpoint, stage)
                         candidate = root / packet["candidate_output_handle"]
                         draft = (
                             root
@@ -316,6 +363,7 @@ def run_job(root: Path, *, job_ref: str, stop_after: str) -> dict[str, Any]:
                                 "staging requires an imported candidate",
                                 "have one AI worker write the candidate JSON, then import it",
                             )
+                        require_current_candidate(root, job_ref)
                         try:
                             validate_content_draft(root, job_ref, draft)
                         except (ContentStageError, OSError) as exc:

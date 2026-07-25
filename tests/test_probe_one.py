@@ -360,6 +360,34 @@ def test_extract_standard_play_url_selects_first_https_url() -> None:
     )
 
 
+def test_extract_standard_play_url_prefers_highest_valid_quality() -> None:
+    item = {
+        "video": {
+            "bit_rate": [
+                {
+                    "bit_rate": 800_000,
+                    "play_addr": {
+                        "width": 720,
+                        "height": 1280,
+                        "url_list": ["https://v.douyinvod.com/720p"],
+                    },
+                },
+                {
+                    "bit_rate": 1_600_000,
+                    "play_addr": {
+                        "width": 1080,
+                        "height": 1920,
+                        "url_list": ["https://v.douyinvod.com/1080p"],
+                    },
+                },
+            ],
+            "play_addr": {"url_list": ["https://v.douyinvod.com/fallback"]},
+        }
+    }
+
+    assert extract_standard_play_url(item) == "https://v.douyinvod.com/1080p"
+
+
 def test_execute_probe_uses_play_addr_and_keeps_private_values_out_of_output(
     tmp_path: Path,
 ) -> None:

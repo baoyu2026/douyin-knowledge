@@ -13,9 +13,3 @@ content:
 publishing:
   enabled: false
   require_confirmation: true
-limits:
-  analysis_workers: 1
-  semantic_workers: 2
-  publisher_workers: 1
-  default_batch: 1
-  maximum_batch_after_canary: 5

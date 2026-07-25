@@ -1,6 +1,6 @@
 ---
 name: douyin-knowledge
-description: Convert a user's own Douyin favorites into a private, reviewed local knowledge library using the douyin-knowledge JSON CLI, local ASR/OCR, bounded semantic JSON candidates, deterministic validation, Obsidian publication, checkpoints, and reconciliation. Use when the user asks to log in to Douyin, sync favorites or 收藏, process one or a small batch of saved videos, resume a failed item, review generated knowledge, publish to Library/Obsidian, inspect pipeline status, or operate this repository from Codex, OpenClaw, or a candidate-only host.
+description: Convert a user's own Douyin favorites into a private, reviewed local knowledge library using the douyin-knowledge JSON CLI, local ASR/OCR, bounded semantic JSON candidates, deterministic validation, Obsidian publication, checkpoints, and reconciliation. Use when the user asks to log in to Douyin, sync favorites or 收藏, process one or a small batch of saved videos, resume a failed item, review generated knowledge, publish to Library/Obsidian, inspect pipeline status, or operate an installed douyin-knowledge release from Codex or another host that has passed the documented capability gate.
 ---
 
 # Douyin Knowledge
@@ -11,15 +11,18 @@ instance directory. Never treat an assistant message as completion evidence.
 
 ## Start Safely
 
-1. Resolve the instance root from the user's explicit choice or
-   `DOUYIN_KNOWLEDGE_ROOT`. Do not guess a production directory.
-2. Run `douyin-knowledge --root <root> init --json`, then `doctor --json` and
-   `status --json`.
-3. Read [references/cli-contract.md](references/cli-contract.md) before composing
+1. Invoke `scripts/invoke.ps1` from this Skill for every CLI operation. Never assume
+   the bare `douyin-knowledge` command is on `PATH`. If the adapter is unavailable,
+   read [references/installation-and-configuration.md](references/installation-and-configuration.md).
+2. Use the instance root bound by the installer. To change it, rerun the installer
+   with the user's explicit path; do not read or expose `runtime.local.json`.
+3. Run `init --json`, then `doctor --json` and `status --json` through the adapter.
+4. Read [references/cli-contract.md](references/cli-contract.md) before composing
    commands or interpreting errors.
-4. Report only `safe_summary`, stable `job_ref` values, counts, booleans, relative
-   handles, and documented error fields. Do not echo absolute paths, URLs, raw
-   platform IDs, cookies, model logs, or reviewer notes.
+5. Outside explicit human review, report only `safe_summary`, stable `job_ref` values,
+   counts, booleans, relative handles, and documented error fields. During review,
+   also permit a bounded generated-draft excerpt. Never echo absolute paths, URLs,
+   raw platform IDs, cookies, model logs, or reviewer notes.
 
 ## Choose the Workflow
 
@@ -30,8 +33,10 @@ instance directory. Never treat an assistant message as completion evidence.
 - For semantic work, export one packet, let one worker write one pure JSON
   candidate, import it, and check authoritative status. Read
   [references/semantic-worker-protocol.md](references/semantic-worker-protocol.md).
-- For human review, record `approve` or `reject`. Never publish an unapproved current
-  candidate.
+- For human review, provide the returned relative `draft_handle`, optionally show a
+  bounded generated-draft excerpt, then stop. Record `approve` or `reject` only after
+  the user gives that exact decision for the current candidate. Never infer approval
+  from an earlier analysis or batch confirmation.
 - For publication, describe the exact job, network/model calls, expected time,
   Library/Vault writes, backup/checkpoint behavior, and validation. Wait for a new,
   explicit confirmation, then publish serially and reconcile.

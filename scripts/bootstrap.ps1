@@ -2,7 +2,8 @@ param(
     [string]$InstanceRoot = "",
     [switch]$WithDev,
     [switch]$SkipBrowser,
-    [switch]$InstallCodexSkill
+    [switch]$InstallCodexSkill,
+    [switch]$ForceSkill
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,6 +11,7 @@ $Repository = Split-Path -Parent $PSScriptRoot
 $VirtualEnvironment = Join-Path $Repository ".venv"
 $Python = Join-Path $VirtualEnvironment "Scripts\python.exe"
 $Cli = Join-Path $VirtualEnvironment "Scripts\douyin-knowledge.exe"
+$InstanceBinding = Join-Path $VirtualEnvironment "instance-root.txt"
 
 if (-not $InstanceRoot) {
     if (-not $env:LOCALAPPDATA) { throw "LOCALAPPDATA is unavailable; pass -InstanceRoot." }
@@ -46,6 +48,14 @@ finally {
     Pop-Location
 }
 
+$BindingTemporary = "$InstanceBinding.tmp"
+[System.IO.File]::WriteAllText(
+    $BindingTemporary,
+    $InstanceRoot + [Environment]::NewLine,
+    [System.Text.UTF8Encoding]::new($false)
+)
+Move-Item -LiteralPath $BindingTemporary -Destination $InstanceBinding -Force
+
 if (-not $SkipBrowser) {
     & $Python -m playwright install chromium
     if ($LASTEXITCODE -ne 0) { throw "Failed to install Playwright Chromium." }
@@ -54,7 +64,9 @@ if (-not $SkipBrowser) {
 & $Cli --root $InstanceRoot init --json
 if ($LASTEXITCODE -ne 0) { throw "Failed to initialize the private instance." }
 if ($InstallCodexSkill) {
-    & (Join-Path $PSScriptRoot "install-skill.ps1")
+    $SkillParameters = @{ InstanceRoot = $InstanceRoot; CliPath = $Cli }
+    if ($ForceSkill) { $SkillParameters["Force"] = $true }
+    & (Join-Path $PSScriptRoot "install-skill.ps1") @SkillParameters
     if ($LASTEXITCODE -ne 0) { throw "Failed to install the Codex Skill." }
 }
 & $Cli --root $InstanceRoot doctor --json

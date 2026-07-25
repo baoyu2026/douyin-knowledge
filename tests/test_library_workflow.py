@@ -532,6 +532,16 @@ def test_registry_favorite_state_sync_preserves_note_body(tmp_path: Path) -> Non
     assert sync_favorite_states(tmp_path, vault) == 0
 
 
+def test_unconfigured_obsidian_vault_is_optional(tmp_path: Path) -> None:
+    from app.obsidian_publish import configured_vault
+
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "obsidian.yml").write_text("vault: null\n", encoding="utf-8")
+
+    assert configured_vault(tmp_path) is None
+
+
 def test_migration_plan_has_no_side_effect_and_blocks_sensitive_path(tmp_path: Path) -> None:
     correct = tmp_path / "data" / "probe-collect" / "correct.mp4"
     correct.parent.mkdir(parents=True)

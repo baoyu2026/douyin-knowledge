@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.analyze_video import JOB_ID_PATTERN
+from app.keyframe_selection import resolve_keyframes
 
 CONTENT_PACKET_SCHEMA_VERSION = 1
 DEFAULT_MAX_BYTES = 64 * 1024
@@ -19,7 +20,9 @@ MIN_MAX_BYTES = 4 * 1024
 SOURCE_FILES = {
     "summary": "summary.md",
     "transcript": "transcript.md",
+    "transcript_json": "transcript.json",
     "ocr": "ocr.md",
+    "ocr_json": "ocr.json",
     "timeline": "timeline.md",
     "manifest": "manifest.json",
 }
@@ -55,32 +58,43 @@ def _sha256(path: Path) -> str:
 
 
 def _encoded(payload: dict[str, Any]) -> bytes:
-    return (
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
+    return (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+
+
+def _clean_record_detail(value: str) -> tuple[str, bool]:
+    value = " ".join(value.replace("\r", " ").replace("\n", " ").split())
+    if not value or MARKDOWN_NOISE_PATTERN.fullmatch(value):
+        return "", False
+    if PRIVATE_TEXT_PATTERN.search(value) or URL_PATTERN.search(value):
+        return "", False
+    value = ABSOLUTE_PATH_PATTERN.sub("[private-path-removed]", value)
+    truncated = len(value) > 800
+    return value[:800].strip(), truncated
 
 
 def _clean_record(value: str) -> str:
-    value = " ".join(value.replace("\r", " ").replace("\n", " ").split())
-    if not value or MARKDOWN_NOISE_PATTERN.fullmatch(value):
-        return ""
-    if PRIVATE_TEXT_PATTERN.search(value) or URL_PATTERN.search(value):
-        return ""
-    value = ABSOLUTE_PATH_PATTERN.sub("[private-path-removed]", value)
-    return value[:800].strip()
+    return _clean_record_detail(value)[0]
 
 
 def _records(text: str) -> list[str]:
+    return _records_with_stats(text)[0]
+
+
+def _records_with_stats(text: str) -> tuple[list[str], int]:
     seen: set[str] = set()
     records: list[str] = []
+    long_records_truncated = 0
     for raw in text.splitlines():
-        value = _clean_record(raw)
+        value, shortened = _clean_record_detail(raw)
         key = re.sub(r"[\s|*_`#>-]+", "", value).casefold()
         if not value or not key or key in seen:
             continue
         seen.add(key)
         records.append(value)
-    return records
+        long_records_truncated += int(shortened)
+    return records, long_records_truncated
 
 
 def _coverage_order(values: list[str]) -> list[str]:
@@ -112,6 +126,26 @@ def _manifest_facts(manifest: dict[str, Any]) -> dict[str, Any]:
     source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
     asr = manifest.get("asr") if isinstance(manifest.get("asr"), dict) else {}
     ocr = manifest.get("ocr") if isinstance(manifest.get("ocr"), dict) else {}
+    coverage = (
+        manifest.get("coverage_report") if isinstance(manifest.get("coverage_report"), dict) else {}
+    )
+    safe_coverage = {
+        key: _safe_scalar(coverage.get(key))
+        for key in (
+            "scan_reached_end",
+            "tail_frame_readable",
+            "timeline_span_ratio",
+            "tail_gap_seconds",
+            "max_selected_gap_seconds",
+            "candidate_count",
+            "candidates_omitted",
+            "output_limit_reached",
+            "asr_source_duration_ratio",
+            "asr_duration_status",
+            "asr_quality_status",
+        )
+        if key in coverage
+    }
     return {
         "duration_seconds": _safe_scalar(source.get("duration_seconds")),
         "dimensions": [
@@ -122,38 +156,15 @@ def _manifest_facts(manifest: dict[str, Any]) -> dict[str, Any]:
         "asr_segment_count": _safe_scalar(asr.get("segment_count")),
         "ocr_engine": _safe_scalar(ocr.get("engine")),
         "ocr_line_count": _safe_scalar(ocr.get("line_count")),
+        "coverage_report": safe_coverage,
     }
 
 
-def _selected_keyframes(
-    analysis: Path, manifest: dict[str, Any]
-) -> list[dict[str, Any]]:
-    keyframes = manifest.get("keyframes")
-    items = keyframes.get("items") if isinstance(keyframes, dict) else None
-    if not isinstance(items, list):
-        raise ContentPacketError("analysis manifest has no keyframe list")
-    valid: list[tuple[dict[str, Any], Path]] = []
-    analysis_root = analysis.resolve()
-    for item in items:
-        if not isinstance(item, dict) or not isinstance(item.get("file"), str):
-            continue
-        path = (analysis / item["file"]).resolve()
-        try:
-            path.relative_to(analysis_root)
-        except ValueError:
-            continue
-        if path.is_file():
-            valid.append((item, path))
-    if not valid:
-        raise ContentPacketError("analysis manifest has no usable keyframes")
-    count = min(8, len(valid))
-    if count == 1:
-        selected = valid
-    else:
-        indices = [
-            round(index * (len(valid) - 1) / (count - 1)) for index in range(count)
-        ]
-        selected = [valid[index] for index in dict.fromkeys(indices)]
+def _selected_keyframes(analysis: Path, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    try:
+        selected = resolve_keyframes(analysis, manifest, max_count=8)
+    except ValueError as exc:
+        raise ContentPacketError(str(exc)) from exc
     return [
         {
             "frame_index": index,
@@ -202,6 +213,24 @@ def build_content_packet(
     if not isinstance(manifest, dict):
         raise ContentPacketError("analysis manifest must be an object")
 
+    source_records: dict[str, list[str]] = {}
+    long_record_counts: dict[str, int] = {}
+    for name in ("summary", "transcript", "ocr", "timeline"):
+        records, long_records_truncated = _records_with_stats(texts[name])
+        source_records[name] = records
+        long_record_counts[name] = long_records_truncated
+    source_coverage = {
+        name: {
+            "total_records": len(records),
+            "included_records": len(records),
+            "truncated": False,
+            "long_records_truncated": long_record_counts[name],
+            "first_record_included": False,
+            "last_record_included": False,
+        }
+        for name, records in source_records.items()
+    }
+
     packet: dict[str, Any] = {
         "schema_version": CONTENT_PACKET_SCHEMA_VERSION,
         "job_ref": job_id,
@@ -216,6 +245,7 @@ def build_content_packet(
         },
         "manifest_facts": _manifest_facts(manifest),
         "selected_keyframes": _selected_keyframes(analysis, manifest),
+        "source_coverage": source_coverage,
         "evidence": {
             "timeline": [],
             "numeric_and_proper_nouns": [],
@@ -226,14 +256,10 @@ def build_content_packet(
     if metadata_size > max_bytes:
         raise ContentPacketError("max_bytes is too small for hashes and keyframe metadata")
 
-    timeline = _records(texts["timeline"])
-    factual = _records(
-        "\n".join(texts[name] for name in ("ocr", "summary", "transcript"))
-    )
+    timeline = source_records["timeline"]
+    factual = _records("\n".join(texts[name] for name in ("ocr", "summary", "transcript")))
     factual = [value for value in factual if FACT_PATTERN.search(value)]
-    passages = _records(
-        "\n".join(texts[name] for name in ("summary", "transcript", "ocr"))
-    )
+    passages = _records("\n".join(texts[name] for name in ("summary", "transcript", "ocr")))
     evidence = packet["evidence"]
     available = max_bytes - metadata_size
     timeline_limit = metadata_size + int(available * 0.45)
@@ -257,6 +283,15 @@ def build_content_packet(
         (value for value in passages if value not in used),
         max_bytes,
     )
+
+    included_values = {value for values in evidence.values() for value in values}
+    for name, records in source_records.items():
+        coverage = source_coverage[name]
+        included_count = sum(value in included_values for value in records)
+        coverage["included_records"] = included_count
+        coverage["truncated"] = included_count < len(records) or long_record_counts[name] > 0
+        coverage["first_record_included"] = bool(records and records[0] in included_values)
+        coverage["last_record_included"] = bool(records and records[-1] in included_values)
 
     encoded = _encoded(packet)
     if len(encoded) > max_bytes:

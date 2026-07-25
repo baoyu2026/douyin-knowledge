@@ -24,6 +24,7 @@ CONTROLLED_FAILURE_EXIT = 4
 INTERNAL_FAILURE_EXIT = 5
 PROBE_DIR = Path("data/probe-collect")
 OUTPUT_DIR = Path("data/analysis/collect-probe-sample")
+ANALYSIS_VERSION = 2
 JOBS_DIR = Path("data/jobs")
 JOB_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 REQUIRED_ANALYSIS_ARTIFACTS = {
@@ -58,7 +59,7 @@ class AnalysisConfig:
     asr_model: str = "small"
     device: str = "cpu"
     compute_type: str = "int8"
-    sample_interval_seconds: float = 1.0
+    sample_interval_seconds: float = 0.5
     coverage_interval_seconds: float = 15.0
     scene_threshold: float = 0.12
     duplicate_hamming_ratio: float = 0.08
@@ -213,6 +214,11 @@ def load_current_manifest(video: Path, output: Path) -> dict[str, Any] | None:
     manifest_path = output / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("analysis_version") != ANALYSIS_VERSION:
+            return None
+        coverage = manifest.get("coverage_report")
+        if not isinstance(coverage, dict) or coverage.get("scan_reached_end") is not True:
+            return None
         source = manifest.get("source", {})
         if source.get("sha256") != sha256_file(video):
             return None
@@ -464,56 +470,163 @@ def extract_keyframes(
     metadata: dict[str, float | int],
     config: AnalysisConfig,
     deps: RuntimeDependencies,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     duration = float(metadata["duration_seconds"])
     capture = deps.cv2.VideoCapture(str(video))
-    accepted: list[tuple[bytes, dict[str, Any]]] = []
+    candidates: list[dict[str, Any]] = []
     previous_gray = None
     coverage_interval = min(
         config.coverage_interval_seconds,
         max(config.sample_interval_seconds, duration / 4),
     )
-    last_candidate_time = -coverage_interval
+    last_coverage_time = -coverage_interval
+    sample_count = 0
+    valid_sample_count = 0
+    last_attempted = 0.0
+    last_decodable = 0.0
+    last_observation: dict[str, Any] | None = None
+    expected_tail_timestamp = max(
+        0.0,
+        (int(metadata["frame_count"]) - 1) / float(metadata["fps"]),
+    )
+
+    def observe(timestamp: float, *, force_tail: bool = False) -> None:
+        nonlocal previous_gray, last_coverage_time, sample_count
+        nonlocal valid_sample_count, last_attempted, last_decodable, last_observation
+        last_attempted = max(last_attempted, timestamp)
+        sample_count += 1
+        capture.set(deps.cv2.CAP_PROP_POS_MSEC, timestamp * 1000.0)
+        ok, frame = capture.read()
+        if not ok:
+            return
+        valid_sample_count += 1
+        last_decodable = max(last_decodable, timestamp)
+        gray = deps.cv2.cvtColor(frame, deps.cv2.COLOR_BGR2GRAY)
+        comparison = deps.cv2.resize(gray, (320, 180), interpolation=deps.cv2.INTER_AREA)
+        scene_score = (
+            1.0
+            if previous_gray is None
+            else float(deps.np.mean(deps.cv2.absdiff(comparison, previous_gray))) / 255.0
+        )
+        previous_gray = comparison
+        coverage_due = timestamp - last_coverage_time >= coverage_interval
+        reason = (
+            "first"
+            if last_observation is None
+            else (
+                "tail"
+                if force_tail
+                else ("scene_change" if scene_score >= config.scene_threshold else "coverage")
+            )
+        )
+        observation = {
+            "timestamp": timestamp,
+            "scene_score": scene_score,
+            "signature": _frame_signature(gray, deps),
+            "reason": reason,
+        }
+        last_observation = observation
+        if not candidates or force_tail or scene_score >= config.scene_threshold or coverage_due:
+            if candidates and abs(float(candidates[-1]["timestamp"]) - timestamp) < 1e-6:
+                candidates[-1] = observation
+            else:
+                candidates.append(observation)
+            if coverage_due:
+                last_coverage_time = timestamp
+
     try:
         if not capture.isOpened():
             raise AnalysisError("video_open_failed", "OpenCV 无法为关键帧提取打开 MP4")
         timestamp = 0.0
-        while timestamp < duration and len(accepted) < config.max_keyframes:
+        while timestamp < expected_tail_timestamp:
+            observe(timestamp)
+            timestamp += config.sample_interval_seconds
+        observe(expected_tail_timestamp, force_tail=True)
+    finally:
+        capture.release()
+    if not candidates and last_observation is not None:
+        candidates.append(last_observation)
+    if not candidates:
+        raise AnalysisError("keyframe_extraction_failed", "未能从 MP4 提取任何关键帧")
+    if config.max_keyframes < 1:
+        raise AnalysisError("keyframe_limit_invalid", "关键帧上限必须大于 0")
+
+    desired_coverage = max(1, math.ceil(duration / coverage_interval) + 1)
+    minimum_coverage = min(config.max_keyframes, 3 if config.max_keyframes >= 3 else 2)
+    coverage_slots = min(
+        config.max_keyframes,
+        max(
+            minimum_coverage,
+            min(desired_coverage, math.ceil(config.max_keyframes * 0.6)),
+        ),
+    )
+    candidate_tail = float(candidates[-1]["timestamp"])
+    targets = (
+        [0.0]
+        if coverage_slots == 1
+        else [index * candidate_tail / (coverage_slots - 1) for index in range(coverage_slots)]
+    )
+    selected_indices: list[int] = []
+    selection_reasons: dict[int, str] = {}
+    for target_index, target in enumerate(targets):
+        candidate_index = min(
+            range(len(candidates)),
+            key=lambda index: (abs(float(candidates[index]["timestamp"]) - target), index),
+        )
+        if candidate_index not in selected_indices:
+            selected_indices.append(candidate_index)
+        if target_index == 0:
+            selection_reasons[candidate_index] = "first"
+        elif target_index == len(targets) - 1 and selection_reasons.get(candidate_index) != "first":
+            selection_reasons[candidate_index] = "tail"
+        else:
+            selection_reasons.setdefault(candidate_index, "coverage")
+
+    ranked = sorted(
+        (index for index in range(len(candidates)) if index not in selected_indices),
+        key=lambda index: (
+            -float(candidates[index]["scene_score"]),
+            float(candidates[index]["timestamp"]),
+        ),
+    )
+    for candidate_index in ranked:
+        if len(selected_indices) >= config.max_keyframes:
+            break
+        signature = candidates[candidate_index]["signature"]
+        distances = [
+            hamming_ratio(signature, candidates[index]["signature"]) for index in selected_indices
+        ]
+        if distances and min(distances) <= config.duplicate_hamming_ratio:
+            continue
+        selected_indices.append(candidate_index)
+    for candidate_index in ranked:
+        if len(selected_indices) >= config.max_keyframes:
+            break
+        if candidate_index not in selected_indices:
+            selected_indices.append(candidate_index)
+
+    selected_indices.sort(key=lambda index: float(candidates[index]["timestamp"]))
+    selected = [candidates[index] for index in selected_indices]
+    capture = deps.cv2.VideoCapture(str(video))
+    records: list[dict[str, Any]] = []
+    emitted_signatures: list[bytes] = []
+    try:
+        if not capture.isOpened():
+            raise AnalysisError("video_open_failed", "OpenCV 无法为关键帧提取打开 MP4")
+        for index, (candidate_index, candidate) in enumerate(
+            zip(selected_indices, selected, strict=True), 1
+        ):
+            timestamp = float(candidate["timestamp"])
             capture.set(deps.cv2.CAP_PROP_POS_MSEC, timestamp * 1000.0)
             ok, frame = capture.read()
             if not ok:
-                timestamp += config.sample_interval_seconds
-                continue
-            gray = deps.cv2.cvtColor(frame, deps.cv2.COLOR_BGR2GRAY)
-            comparison = deps.cv2.resize(gray, (320, 180), interpolation=deps.cv2.INTER_AREA)
-            scene_score = (
-                1.0
-                if previous_gray is None
-                else float(deps.np.mean(deps.cv2.absdiff(comparison, previous_gray))) / 255.0
+                raise AnalysisError("keyframe_extraction_failed", "关键帧回读失败")
+            signature = candidate["signature"]
+            nearest_distance = min(
+                (hamming_ratio(signature, value) for value in emitted_signatures),
+                default=1.0,
             )
-            coverage_due = timestamp - last_candidate_time >= coverage_interval
-            is_candidate = (
-                previous_gray is None or scene_score >= config.scene_threshold or coverage_due
-            )
-            previous_gray = comparison
-            if not is_candidate:
-                timestamp += config.sample_interval_seconds
-                continue
-
-            signature = _frame_signature(gray, deps)
-            distances = [hamming_ratio(signature, item[0]) for item in accepted]
-            nearest_distance = min(distances, default=1.0)
-            if (
-                distances
-                and nearest_distance <= config.duplicate_hamming_ratio
-                and len(accepted) >= 3
-            ):
-                timestamp += config.sample_interval_seconds
-                continue
-
-            last_candidate_time = timestamp
-            index = len(accepted) + 1
             filename = f"frame-{index:03d}-{round(timestamp * 1000):09d}ms.jpg"
             target = output_dir / filename
             temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp.jpg")
@@ -528,21 +641,54 @@ def extract_keyframes(
                 "id": index,
                 "timestamp": round(timestamp, 3),
                 "file": f"keyframes/{filename}",
-                "reason": (
-                    "first"
-                    if index == 1
-                    else ("scene_change" if scene_score >= config.scene_threshold else "coverage")
-                ),
-                "scene_score": round(scene_score, 6),
+                "reason": selection_reasons.get(candidate_index, str(candidate["reason"])),
+                "scene_score": round(float(candidate["scene_score"]), 6),
                 "nearest_hash_distance": round(nearest_distance, 6),
             }
-            accepted.append((signature, record))
-            timestamp += config.sample_interval_seconds
+            records.append(record)
+            emitted_signatures.append(signature)
     finally:
         capture.release()
-    if not accepted:
-        raise AnalysisError("keyframe_extraction_failed", "未能从 MP4 提取任何关键帧")
-    return [item[1] for item in accepted]
+
+    selected_timestamps = [float(item["timestamp"]) for item in selected]
+    boundaries = [0.0, *selected_timestamps, duration]
+    max_gap = max(
+        (right - left for left, right in zip(boundaries, boundaries[1:], strict=False)),
+        default=duration,
+    )
+    tail_gap = max(0.0, duration - selected_timestamps[-1])
+    scan_tolerance = max(config.sample_interval_seconds, 2 / float(metadata["fps"]))
+    coverage_report = {
+        "sample_interval_seconds": config.sample_interval_seconds,
+        "coverage_interval_seconds": round(coverage_interval, 3),
+        "scan_sample_count": sample_count,
+        "valid_sample_count": valid_sample_count,
+        "scanned_until_seconds": round(last_attempted, 3),
+        "expected_tail_seconds": round(expected_tail_timestamp, 3),
+        "last_decodable_seconds": round(last_decodable, 3),
+        "scan_reached_end": expected_tail_timestamp - last_decodable <= scan_tolerance,
+        "tail_frame_readable": abs(expected_tail_timestamp - last_decodable) <= 1e-3,
+        "candidate_count": len(candidates),
+        "candidate_limit": None,
+        "candidate_limit_reached": False,
+        "output_limit": config.max_keyframes,
+        "output_limit_reached": len(records) >= config.max_keyframes,
+        "candidates_omitted": max(0, len(candidates) - len(records)),
+        "selected_count": len(records),
+        "coverage_target_count": len(targets),
+        "coverage_targets_met": len(
+            {index for index in selected_indices if index in selection_reasons}
+        ),
+        "timeline_span_ratio": round(
+            min(1.0, max(0.0, (selected_timestamps[-1] - selected_timestamps[0]) / duration))
+            if duration
+            else 1.0,
+            6,
+        ),
+        "tail_gap_seconds": round(tail_gap, 3),
+        "max_selected_gap_seconds": round(max_gap, 3),
+    }
+    return records, coverage_report
 
 
 def _ocr_value(result: Any, name: str) -> Any:
@@ -785,12 +931,62 @@ def run_analysis(
             log.emit("asr", "reused_precomputed", segments=len(transcript["segments"]))
         else:
             transcript = transcribe_audio(stage_dir / "audio.wav", config, deps)
+        try:
+            asr_reported_duration = float(transcript["duration_seconds"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise AnalysisError(
+                "asr_duration_missing",
+                "ASR 未报告已处理音频时长，无法验证完整性",
+            ) from exc
+        source_duration = float(metadata["duration_seconds"])
+        if not math.isfinite(asr_reported_duration) or asr_reported_duration <= 0:
+            raise AnalysisError("asr_duration_missing", "ASR 已处理音频时长无效")
+        asr_duration_ratio = asr_reported_duration / source_duration
+        if not 0.95 <= asr_duration_ratio <= 1.05:
+            raise AnalysisError(
+                "asr_duration_mismatch",
+                "ASR 已处理音频时长与源视频明显不一致",
+            )
+        detected_language = str(transcript.get("language") or "unknown")
+        language_probability = _optional_round(transcript.get("language_probability"))
+        low_confidence_segment_count = sum(
+            1
+            for segment in transcript["segments"]
+            if segment.get("confidence") is not None and float(segment["confidence"]) < 0.5
+        )
+        asr_quality_status = (
+            "needs_review"
+            if detected_language not in {"zh", "yue"}
+            or language_probability is None
+            or language_probability < 0.7
+            or low_confidence_segment_count > 0
+            else "verified"
+        )
         atomic_write_json(stage_dir / "transcript.json", transcript)
         atomic_write_text(stage_dir / "transcript.md", render_transcript_markdown(transcript))
         log.emit("asr", "ok", segments=len(transcript["segments"]))
 
         log.emit("keyframes", "started")
-        keyframes = extract_keyframes(video, stage_dir / "keyframes", metadata, config, deps)
+        keyframes, coverage_report = extract_keyframes(
+            video, stage_dir / "keyframes", metadata, config, deps
+        )
+        coverage_report.update(
+            {
+                "source_duration_seconds": round(source_duration, 3),
+                "asr_reported_duration_seconds": round(asr_reported_duration, 3),
+                "asr_source_duration_ratio": round(asr_duration_ratio, 6),
+                "asr_duration_status": "verified",
+                "detected_language": detected_language,
+                "language_probability": language_probability,
+                "low_confidence_segment_count": low_confidence_segment_count,
+                "asr_quality_status": asr_quality_status,
+            }
+        )
+        if not coverage_report["scan_reached_end"]:
+            raise AnalysisError(
+                "video_tail_unreadable",
+                "视频尾部未能成功解码，拒绝生成不完整分析",
+            )
         log.emit("keyframes", "ok", unique_frames=len(keyframes))
 
         log.emit("ocr", "started")
@@ -803,6 +999,7 @@ def run_analysis(
         atomic_write_text(stage_dir / "summary.md", render_deterministic_summary(transcript, ocr))
         manifest = {
             "schema_version": 1,
+            "analysis_version": ANALYSIS_VERSION,
             "created_at": datetime.now(UTC).isoformat(),
             "source": {
                 "path": str(video),
@@ -819,6 +1016,12 @@ def run_analysis(
                 "compute_type": config.compute_type,
                 "local_files_only": True,
                 "segment_count": len(transcript["segments"]),
+                "reported_duration_seconds": round(asr_reported_duration, 3),
+                "source_duration_ratio": round(asr_duration_ratio, 6),
+                "detected_language": detected_language,
+                "language_probability": language_probability,
+                "low_confidence_segment_count": low_confidence_segment_count,
+                "quality_status": asr_quality_status,
             },
             "ocr": {
                 "engine": "RapidOCR",
@@ -831,6 +1034,7 @@ def run_analysis(
                 "duplicate_hamming_ratio": config.duplicate_hamming_ratio,
                 "items": keyframes,
             },
+            "coverage_report": coverage_report,
             "artifacts": _artifact_manifest(stage_dir),
         }
         atomic_write_json(stage_dir / "manifest.json", manifest)

@@ -10,6 +10,10 @@ After one failure, follow `error.user_action` and retry only if `retryable=true`
 stated prerequisite was corrected. After the same failure twice, stop and report the
 preserved checkpoint.
 
+After the user fixes that prerequisite and explicitly confirms another attempt, pass
+`--retry-after-fix` to `run`. This resets only the repeated-failure budget; it does not
+skip the failed stage, replace the selected `job_ref`, or bypass validation.
+
 ## Publication States
 
 - `intent`: publication is planned, missing, mismatched, or not fully observed.

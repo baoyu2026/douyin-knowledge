@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "douyin-knowledge"
-version = "1.0.0"
+version = "1.1.0"
 description = "Local Douyin favorites-to-knowledge engine and portable AI Skill"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
   "aiofiles>=23.2.1",
   "aiohttp>=3.9.0",
@@ -68,6 +68,24 @@ namespaces = false
 
 [tool.setuptools.package-data]
 douyin_knowledge = ["resources/*.json", "resources/*.ps1"]
+
+[tool.setuptools.data-files]
+"share/douyin-knowledge/scripts" = [
+  "scripts/douyin-knowledge.ps1",
+  "scripts/install-skill.ps1",
+]
+"share/douyin-knowledge/skills/douyin-knowledge" = [
+  "skills/douyin-knowledge/SKILL.md",
+]
+"share/douyin-knowledge/skills/douyin-knowledge/agents" = [
+  "skills/douyin-knowledge/agents/openai.yaml",
+]
+"share/douyin-knowledge/skills/douyin-knowledge/references" = [
+  "skills/douyin-knowledge/references/*.md",
+]
+"share/douyin-knowledge/skills/douyin-knowledge/scripts" = [
+  "skills/douyin-knowledge/scripts/*.ps1",
+]
 
 [tool.ruff]
 line-length = 100

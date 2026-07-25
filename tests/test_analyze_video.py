@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from app import analyze_video
@@ -11,6 +12,7 @@ from app.analyze_video import (
     DiagnosticLog,
     RuntimeDependencies,
     discover_probe_video,
+    extract_keyframes,
     hamming_ratio,
     load_runtime_dependencies,
     render_deterministic_summary,
@@ -80,6 +82,82 @@ def test_hamming_ratio_exposes_deterministic_keyframe_dedup_distance() -> None:
     assert hamming_ratio(b"\x00\x00", b"\x00\x00") == 0.0
     assert hamming_ratio(b"\x00", b"\xff") == 1.0
     assert hamming_ratio(b"\x00", b"\x01") == 0.125
+
+
+def test_keyframe_selection_scans_tail_before_applying_global_limit(tmp_path: Path) -> None:
+    class FakeCapture:
+        def __init__(self) -> None:
+            self.timestamp = 0.0
+
+        def isOpened(self):
+            return True
+
+        def set(self, _property, value):
+            self.timestamp = value / 1000.0
+
+        def read(self):
+            value = int(self.timestamp * 80) % 256
+            return True, np.full((8, 8), value, dtype=np.uint8)
+
+        def release(self):
+            return None
+
+    class FakeCV2:
+        CAP_PROP_POS_MSEC = 1
+        COLOR_BGR2GRAY = 2
+        INTER_AREA = 3
+        IMWRITE_JPEG_QUALITY = 4
+
+        @staticmethod
+        def VideoCapture(_path):
+            return FakeCapture()
+
+        @staticmethod
+        def cvtColor(frame, _mode):
+            return frame
+
+        @staticmethod
+        def resize(frame, size, interpolation):
+            assert interpolation == FakeCV2.INTER_AREA
+            return np.full((size[1], size[0]), int(frame.mean()), dtype=np.uint8)
+
+        @staticmethod
+        def absdiff(left, right):
+            return np.abs(left.astype(np.int16) - right.astype(np.int16))
+
+        @staticmethod
+        def imwrite(path, _frame, _options):
+            Path(path).write_bytes(b"jpeg")
+            return True
+
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"fixture")
+    frames, coverage = extract_keyframes(
+        video,
+        tmp_path / "keyframes",
+        {
+            "duration_seconds": 10.0,
+            "fps": 10.0,
+            "frame_count": 101,
+            "width": 8,
+            "height": 8,
+        },
+        AnalysisConfig(max_keyframes=4),
+        RuntimeDependencies(FakeCV2, np, None, None),
+    )
+
+    assert len(frames) == 4
+    assert frames[0]["timestamp"] == 0.0
+    assert frames[-1]["timestamp"] == 10.0
+    assert coverage["sample_interval_seconds"] == 0.5
+    assert coverage["scanned_until_seconds"] == 10.0
+    assert coverage["scan_reached_end"] is True
+    assert coverage["tail_frame_readable"] is True
+    assert coverage["candidate_count"] > 4
+    assert coverage["output_limit_reached"] is True
+    assert coverage["candidates_omitted"] > 0
+    assert coverage["coverage_targets_met"] == coverage["coverage_target_count"]
+    assert coverage["timeline_span_ratio"] == 1.0
 
 
 def test_transcribe_audio_keeps_timestamps_and_real_confidence(tmp_path: Path) -> None:
@@ -219,16 +297,24 @@ def install_mock_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
         output.mkdir()
         frame = output / "frame-001-000010000ms.jpg"
         frame.write_bytes(b"fixture jpeg")
-        return [
+        return (
+            [
+                {
+                    "id": 1,
+                    "timestamp": 10.0,
+                    "file": f"keyframes/{frame.name}",
+                    "reason": "first",
+                    "scene_score": 1.0,
+                    "nearest_hash_distance": 1.0,
+                }
+            ],
             {
-                "id": 1,
-                "timestamp": 10.0,
-                "file": f"keyframes/{frame.name}",
-                "reason": "first",
-                "scene_score": 1.0,
-                "nearest_hash_distance": 1.0,
-            }
-        ]
+                "scan_reached_end": True,
+                "tail_frame_readable": True,
+                "candidate_count": 1,
+                "selected_count": 1,
+            },
+        )
 
     monkeypatch.setattr(analyze_video, "extract_audio", fake_audio)
     monkeypatch.setattr(analyze_video, "transcribe_audio", lambda *_args: transcript)
@@ -274,7 +360,35 @@ def test_run_analysis_publishes_complete_fixed_artifact_set_atomically(
     assert manifest["summary_mode"] == "deterministic"
     assert manifest["local_only"] is True
     assert manifest["keyframes"]["count"] == 1
+    assert manifest["coverage_report"]["asr_duration_status"] == "verified"
+    assert manifest["coverage_report"]["asr_source_duration_ratio"] == 1.0
     assert not list(output.parent.glob(".collect-probe-sample.*.tmp"))
+
+
+def test_run_analysis_rejects_obviously_incomplete_asr_duration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_mock_pipeline(monkeypatch)
+    transcript = load_fixture("transcript.json")
+    transcript["duration_seconds"] = 10.0
+    monkeypatch.setattr(analyze_video, "transcribe_audio", lambda *_args: transcript)
+    video = tmp_path / "sample.mp4"
+    video.write_bytes(b"fixture mp4")
+    output = tmp_path / "analysis" / "sample"
+
+    with pytest.raises(AnalysisError) as error:
+        run_analysis(
+            video,
+            output,
+            "mock-ffmpeg",
+            RuntimeDependencies(None, None, None, None),
+            AnalysisConfig(asr_model="fixture-model"),
+            DiagnosticLog(tmp_path / "logs" / "analysis.jsonl"),
+        )
+
+    assert error.value.code == "asr_duration_mismatch"
+    assert not output.exists()
 
 
 def test_run_analysis_failure_keeps_previous_output_and_diagnostic_log(

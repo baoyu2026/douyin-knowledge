@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -51,7 +52,13 @@ def test_review_record_and_list_never_return_private_notes(tmp_path: Path, capsy
     _database(tmp_path)
     candidate = tmp_path / "data" / "tasks" / JOB_REF / "semantic-v1" / "candidate-v1.json"
     candidate.parent.mkdir(parents=True)
-    candidate.write_text("{}", encoding="utf-8")
+    packet_hash = "a" * 64
+    candidate.write_text(
+        json.dumps({"job_ref": JOB_REF, "packet_sha256": packet_hash}), encoding="utf-8"
+    )
+    (candidate.parent / "protocol-manifest.json").write_text(
+        json.dumps({"job_ref": JOB_REF, "packet_sha256": packet_hash}), encoding="utf-8"
+    )
 
     code, recorded = invoke(
         [
@@ -180,12 +187,22 @@ def test_confirmed_publish_requires_review_and_accepts_verified_targets(
     )
     candidate = tmp_path / "data" / "tasks" / job_ref / "semantic-v1" / "candidate-v1.json"
     candidate.parent.mkdir(parents=True)
-    candidate.write_text("{}\n", encoding="utf-8")
+    packet_hash = "b" * 64
+    candidate.write_text(
+        json.dumps({"job_ref": job_ref, "packet_sha256": packet_hash}) + "\n",
+        encoding="utf-8",
+    )
+    (candidate.parent / "protocol-manifest.json").write_text(
+        json.dumps({"job_ref": job_ref, "packet_sha256": packet_hash}), encoding="utf-8"
+    )
     vault = tmp_path / "external-vault"
     (vault / ".obsidian").mkdir(parents=True)
     config = tmp_path / "config"
     config.mkdir()
     (config / "obsidian.yml").write_text(f"vault: '{vault.as_posix()}'\n", encoding="utf-8")
+    (config / "config.yml").write_text(
+        "publishing:\n  enabled: false\n  require_confirmation: true\n", encoding="utf-8"
+    )
 
     code, _review = invoke(
         [
@@ -203,16 +220,24 @@ def test_confirmed_publish_requires_review_and_accepts_verified_targets(
     )
     assert code == 0
 
+    publish_args = [
+        "--root",
+        str(tmp_path),
+        "publish",
+        "--job-ref",
+        job_ref,
+        "--confirm",
+        "--json",
+    ]
+    code, disabled = invoke(publish_args, capsys)
+    assert code == 2
+    assert disabled["error"]["code"] == "publishing_disabled"
+
+    (config / "config.yml").write_text(
+        "publishing:\n  enabled: true\n  require_confirmation: true\n", encoding="utf-8"
+    )
     code, published = invoke(
-        [
-            "--root",
-            str(tmp_path),
-            "publish",
-            "--job-ref",
-            job_ref,
-            "--confirm",
-            "--json",
-        ],
+        publish_args,
         capsys,
     )
 

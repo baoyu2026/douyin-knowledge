@@ -21,23 +21,27 @@ On failure, read `error.code`, `retryable`, `preserved_checkpoint`, and
 
 ## Commands
 
+Let `<invoke>` mean executing this Skill's `scripts/invoke.ps1` with PowerShell. Use
+that adapter for every command; it resolves the installed CLI and bound private
+instance without putting either absolute path in conversational output.
+
 ```text
-douyin-knowledge --root <root> init --json
-douyin-knowledge --root <root> doctor --json
-douyin-knowledge --root <root> status --json
-douyin-knowledge --root <root> plan --limit 1 --json
-douyin-knowledge --root <root> login --confirm --json
-douyin-knowledge --root <root> model install --name small --confirm --json
-douyin-knowledge --root <root> sync --confirm --json
-douyin-knowledge --root <root> canary --limit 1 --no-publish --confirm --json
-douyin-knowledge --root <root> run --job-ref <ref> --stop-after packet --confirm --json
-douyin-knowledge --root <root> packet export --job-ref <ref> --json
-douyin-knowledge --root <root> candidate import --job-ref <ref> --input <file> --json
-douyin-knowledge --root <root> candidate repair-contract --job-ref <ref> --json
-douyin-knowledge --root <root> review list --job-ref <ref> --json
-douyin-knowledge --root <root> review record --job-ref <ref> --decision approve --json
-douyin-knowledge --root <root> publish --job-ref <ref> --confirm --json
-douyin-knowledge --root <root> reconcile --job-ref <ref> --json
+<invoke> init --json
+<invoke> doctor --json
+<invoke> status --json
+<invoke> plan --limit 1 --json
+<invoke> login --confirm --json
+<invoke> model install --name small --confirm --json
+<invoke> sync --confirm --json
+<invoke> canary --limit 1 --no-publish --confirm --json
+<invoke> run --job-ref <ref> --stop-after packet --confirm --json
+<invoke> packet export --job-ref <ref> --json
+<invoke> candidate import --job-ref <ref> --input <file> --json
+<invoke> candidate repair-contract --job-ref <ref> --json
+<invoke> review list --job-ref <ref> --json
+<invoke> review record --job-ref <ref> --decision <approve|reject> --json
+<invoke> publish --job-ref <ref> --confirm --json
+<invoke> reconcile --job-ref <ref> --json
 ```
 
 `run` stops at `download`, `analysis`, `packet`, or `staging`. It never invokes an AI
@@ -54,3 +58,6 @@ Before a gated command, state:
 5. The stop point and deterministic checks.
 
 Obtain a new confirmation for publication even if analysis was already confirmed.
+An operation confirmation is not a content review decision. Never run `review record`
+until the user has inspected the current draft and explicitly said `approve` or
+`reject` for it.
