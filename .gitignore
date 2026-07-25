@@ -1,0 +1,60 @@
+# Python and build output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Private runtime configuration and credentials
+config/*
+!config/config.example.yml
+**/cookies.json
+**/cookies.json.tmp
+**/.cookies.json
+**/cookie-login.blocked
+*.env
+.env.*
+
+# Private state and generated knowledge
+data/
+library/
+Library/
+vault/
+Vault/
+logs/
+output/
+orchestration/
+quarantine/
+models/
+model-cache/
+.cache/
+tasks/
+task-history/
+
+# Databases, media, model artifacts, and generated candidates
+*.db
+*.db-*
+*.sqlite*
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.wav
+*.mp3
+*.onnx
+*.bin
+*.safetensors
+candidate-v1.json
+content-packet.json

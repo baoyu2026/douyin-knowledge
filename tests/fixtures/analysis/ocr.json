@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "engine": "RapidOCR",
+  "frames": [
+    {
+      "keyframe_id": 1,
+      "timestamp": 10.0,
+      "file": "keyframes/frame-001-000010000ms.jpg",
+      "lines": [
+        {
+          "text": "这是本地画面证据",
+          "confidence": 0.93,
+          "box": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]
+        }
+      ]
+    }
+  ]
+}

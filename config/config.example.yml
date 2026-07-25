@@ -1,0 +1,21 @@
+version: 1
+project:
+  data_root: ./data
+  library_root: ./library
+  obsidian_vault: null
+analysis:
+  asr_model: small
+  device: cpu
+  compute_type: int8
+content:
+  protocol: file-json-v1
+  max_model_calls_per_item: 2
+publishing:
+  enabled: false
+  require_confirmation: true
+limits:
+  analysis_workers: 1
+  semantic_workers: 2
+  publisher_workers: 1
+  default_batch: 1
+  maximum_batch_after_canary: 5

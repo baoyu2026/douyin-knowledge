@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://douyin-knowledge.local/schemas/config-v1.schema.json",
+  "title": "Douyin Knowledge Configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "project", "analysis", "content", "publishing"],
+  "properties": {
+    "version": {"const": 1},
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data_root", "library_root", "obsidian_vault"],
+      "properties": {
+        "data_root": {"const": "./data"},
+        "library_root": {"const": "./library"},
+        "obsidian_vault": {"type": ["string", "null"]}
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asr_model", "device", "compute_type"],
+      "properties": {
+        "asr_model": {"enum": ["tiny", "base", "small"]},
+        "device": {"enum": ["cpu", "cuda"]},
+        "compute_type": {"type": "string", "minLength": 1}
+      }
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "max_model_calls_per_item"],
+      "properties": {
+        "protocol": {"const": "file-json-v1"},
+        "max_model_calls_per_item": {"type": "integer", "minimum": 1, "maximum": 2}
+      }
+    },
+    "publishing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "require_confirmation"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "require_confirmation": {"const": true}
+      }
+    }
+  }
+}

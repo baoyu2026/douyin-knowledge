@@ -1,0 +1,99 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "douyin-knowledge"
+version = "1.0.0"
+description = "Local Douyin favorites-to-knowledge engine and portable AI Skill"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+  "aiofiles>=23.2.1",
+  "aiohttp>=3.9.0",
+  "aiosqlite>=0.19.0",
+  "faster-whisper>=1.2,<2",
+  "gmssl>=3.2.2",
+  "huggingface-hub>=0.21,<2",
+  "httpx>=0.25",
+  "imageio-ffmpeg==0.6.0",
+  "numpy>=2.0,<3",
+  "onnxruntime>=1.20,<2",
+  "opencv-python-headless>=4.10,<5",
+  "Pillow>=10.4,<12",
+  "playwright==1.61.0",
+  "python-dateutil>=2.8.2",
+  "PyYAML>=6.0",
+  "rapidocr>=3.4,<4",
+  "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+  "coverage[toml]>=7.6",
+  "pytest>=8.0",
+  "pytest-cov>=6.0",
+  "ruff>=0.15",
+]
+
+[project.scripts]
+douyin-knowledge = "douyin_knowledge.cli:entrypoint"
+
+[tool.setuptools.packages.find]
+where = ["src", ".", "vendor/douyin-downloader"]
+include = [
+  "douyin_knowledge",
+  "douyin_knowledge.*",
+  "app",
+  "auth",
+  "auth.*",
+  "cli",
+  "cli.*",
+  "config",
+  "config.*",
+  "control",
+  "control.*",
+  "core",
+  "core.*",
+  "storage",
+  "storage.*",
+  "tools",
+  "tools.*",
+  "utils",
+  "utils.*",
+]
+namespaces = false
+
+[tool.setuptools.package-data]
+douyin_knowledge = ["resources/*.json", "resources/*.ps1"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = [
+  ".venv",
+  "build",
+  "dist",
+  "*.egg-info",
+  "archive",
+  "data",
+  "douyin-knowledgeorchestrationcodex.pytest-tmp-*",
+  "library",
+  "logs",
+  "orchestration",
+  "output",
+  "quarantine",
+  "vendor",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.coverage.run]
+branch = true
+source = ["douyin_knowledge"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true

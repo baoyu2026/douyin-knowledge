@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install ".[dev]"
+      - run: python -m ruff check .
+      - run: python -m compileall -q app src
+      - run: python -m pytest --cov=douyin_knowledge --cov-report=term-missing --cov-fail-under=80
+      - shell: powershell
+        run: |
+          Get-ChildItem scripts -Filter *.ps1 | ForEach-Object {
+            [void][scriptblock]::Create((Get-Content -Raw -LiteralPath $_.FullName))
+          }
+      - run: python -m build

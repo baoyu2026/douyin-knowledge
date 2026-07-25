@@ -1,0 +1,4 @@
+interface:
+  display_name: "Douyin Knowledge"
+  short_description: "Turn Douyin favorites into reviewed local knowledge"
+  default_prompt: "Use $douyin-knowledge to process one Douyin favorite into reviewed local knowledge without publishing by default."

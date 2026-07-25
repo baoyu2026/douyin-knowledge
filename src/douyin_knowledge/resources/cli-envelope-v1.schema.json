@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://douyin-knowledge.local/schemas/cli-envelope-v1.schema.json",
+  "title": "Douyin Knowledge CLI Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ok",
+    "operation",
+    "data",
+    "error",
+    "warnings",
+    "safe_summary"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "ok": {"type": "boolean"},
+    "operation": {"type": "string", "minLength": 1},
+    "data": {"type": "object"},
+    "error": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "retryable", "preserved_checkpoint", "user_action"],
+          "properties": {
+            "code": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+            "message": {"type": "string"},
+            "retryable": {"type": "boolean"},
+            "preserved_checkpoint": {"type": "boolean"},
+            "user_action": {"type": "string"}
+          }
+        }
+      ]
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "safe_summary": {"type": "string"}
+  }
+}
