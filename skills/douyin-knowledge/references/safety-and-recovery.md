@@ -2,6 +2,12 @@
 
 ## Failure Handling
 
+For an interrupted `migrate results`, keep both the legacy `library/` and configured
+results archive in place, then rerun the same confirmed command. Verified copies are
+reused. A `results_migration_conflict` means the same entry differs between roots;
+do not overwrite either copy until the difference is resolved. Migration never
+changes accepted/completed state.
+
 Use `status`, then `reconcile --job-ref <ref>`. Resume only the same stable `job_ref`.
 Do not delete checkpoints, quarantine, publication intents, backups, or accepted
 artifacts to make a retry appear clean.

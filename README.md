@@ -18,6 +18,7 @@
 - 生成结构化知识草稿，经过 schema、来源、时效性和完整性校验。
 - 强制区分“执行分析”和“发布”两类确认；内部草稿不设人工批准门禁。
 - 使用 SQLite、检查点和发布 journal 恢复中断任务，并对账 Obsidian 结果。
+- 将旧版 `library` 成果复制、校验并整理到用户指定的人类成果库。
 
 ```text
 收藏快照 -> 单条 canary -> 本地 ASR/OCR/关键帧 -> AI 候选
@@ -34,7 +35,7 @@
 - 用户自己的抖音账号
 - Obsidian Vault（仅发布时需要）
 
-Codex + Windows + PowerShell 已完成发布级端到端验证。OpenClaw 尚未完成 1.3 版本的发布级端到端验证，只能在通过[宿主能力检查](skills/douyin-knowledge/references/host-adapters.md)后按实际能力使用，不应视为完整支持。
+Codex + Windows + PowerShell 已完成发布级端到端验证。OpenClaw 尚未完成当前版本的发布级端到端验证，只能在通过[宿主能力检查](skills/douyin-knowledge/references/host-adapters.md)后按实际能力使用，不应视为完整支持。
 
 ## 快速安装
 
@@ -103,7 +104,15 @@ $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 
 中文和空格会保留，Windows 不允许的文件名字符会替换为短横线。同一分类下两个不同视频同名时，后一个使用 `标题 (2)`，不会覆盖前一个。条目一旦发布会复用原目录，纠错不会生成重复文件夹。成果库包含一份真实的原视频副本，因此可以独立于私有缓存保存和备份。
 
-成果库开始参与发布对账后不能直接改根目录，否则历史 journal 无法确认原文件。当前版本会拒绝这种改绑；需要移动时应先保留原目录，等待后续迁移命令支持。
+如果旧版本已经在私有实例的 `library` 中生成过成果，先配置新的成果库，再执行一次受控迁移：
+
+```powershell
+& $DK migrate results --confirm --json
+```
+
+迁移会复制结构完整的历史成果、逐条校验哈希、重建 `00-总索引`，并登记新位置供后续纠错复用。重复执行会复用已经验证的副本；如果同一成果在目标目录中被改过，命令会停止并保留两边文件，不会覆盖。旧 `library` 和历史发布 journal 始终保留，所以迁移成功不等于视频被重新发布，也不会改写 `accepted` 或 `completed` 状态。
+
+成果库开始参与新发布对账后不能直接改根目录，否则历史 journal 无法确认原文件。当前迁移命令只负责从旧版 `library` 过渡到首次配置的人类成果库，不支持搬迁一个已经产生 `results/` journal 的成果库。
 
 ## 用 Skill 开始
 
@@ -134,6 +143,7 @@ $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 
 & $DK doctor --json
 & $DK configure results --path 'D:\知识库\抖音收藏成果' --confirm --json
+& $DK migrate results --confirm --json
 & $DK login --confirm --json
 & $DK model install --name small --confirm --json
 & $DK sync --confirm --json
@@ -146,6 +156,7 @@ $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 - `model install` 安装本地 ASR 模型。
 - `plan` 返回稳定的任务引用，不修改内容。
 - `canary` 只处理一条，并停在语义证据包；它不调用额外模型，也不发布。
+- `migrate results` 只复制并校验旧成果，保留旧目录，不重新处理视频。
 
 首次安装 Chromium 和本地模型需要一定时间与磁盘空间。任何阶段中断后，先运行 `status --json` 和 `doctor --json`，再使用原任务引用恢复，不要另选一条替代。
 
@@ -225,6 +236,7 @@ git pull
 ```
 
 更新 Skill 时，安装器会先备份内容不同的旧副本。私有实例位于仓库之外，不会被 `git pull` 覆盖。
+如果 `.venv` 中已有私有实例绑定，更新命令会自动沿用，不会切回默认目录；只有主动迁移私有实例时才重新传入 `-InstanceRoot`。
 
 完整安装、实例重绑定和其他宿主说明见：
 
@@ -242,7 +254,7 @@ git pull
 .\.venv\Scripts\python.exe -m compileall -q app src
 .\.venv\Scripts\python.exe -m build
 .\scripts\test-distribution.ps1 `
-  -WheelPath .\dist\douyin_knowledge-1.3.0-py3-none-any.whl `
+  -WheelPath .\dist\douyin_knowledge-1.4.0-py3-none-any.whl `
   -Python .\.venv\Scripts\python.exe
 ```
 

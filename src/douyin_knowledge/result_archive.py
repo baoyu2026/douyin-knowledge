@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import uuid
@@ -12,6 +13,7 @@ RESULTS_CONFIG = Path("config/results.yml")
 RESULTS_LAYOUT = "category-title-v1"
 RESULTS_HANDLE_ROOT = "results"
 LEGACY_LIBRARY_ROOT = Path("library")
+RESULTS_MIGRATION_STATE = Path("data/migrations/results-v1.json")
 PRIVATE_INSTANCE_DIRS = frozenset(
     {"config", "data", "logs", "orchestration", "output", "quarantine", "schemas"}
 )
@@ -160,6 +162,23 @@ def _validate_target(instance_root: Path, target: Path) -> None:
 
 
 def _root_is_locked(instance_root: Path) -> bool:
+    migration_state = instance_root / RESULTS_MIGRATION_STATE
+    if migration_state.is_file():
+        try:
+            payload = json.loads(migration_state.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ResultsConfigError(
+                "results_lock_check_failed",
+                "results migration history could not be checked before changing the root",
+            ) from exc
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            raise ResultsConfigError(
+                "results_lock_check_failed",
+                "results migration history is invalid",
+            )
+        entries = payload.get("entries")
+        if isinstance(entries, list) and entries:
+            return True
     database = instance_root / "data" / "knowledge.db"
     if not database.is_file():
         return False

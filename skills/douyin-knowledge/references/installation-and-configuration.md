@@ -47,6 +47,18 @@ Each published item is filed as `<主分类>/<标题>/`; only title collisions r
 numeric suffix. The archive includes the original video as a real copy so it remains
 self-contained if private checkpoints are later cleaned.
 
+If a previous release already published human-readable entries under the private
+instance's legacy `library/`, preserve that directory. After configuring the new
+archive and receiving a separate explicit migration confirmation, run:
+
+```text
+<invoke> migrate results --confirm --json
+```
+
+The migration copies complete entries, verifies their hashes, rebuilds the new
+archive index, and leaves the old directory and historical publication records in
+place. Do not manually move or delete the legacy directory after migration.
+
 Do not hand-edit or relocate a configured archive after publications have been
 journaled. The root is locked because reconciliation must continue resolving every
 historical `results/` handle to the same files.

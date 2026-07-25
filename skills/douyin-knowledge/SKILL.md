@@ -1,6 +1,6 @@
 ---
 name: douyin-knowledge
-description: Convert a user's own Douyin favorites into a private, reconciled local knowledge library with a user-chosen human-readable results archive, using the douyin-knowledge JSON CLI, local ASR/OCR, bounded semantic JSON candidates, deterministic validation, Obsidian publication, checkpoints, and post-publication correction. Use when the user asks to configure where Douyin results are stored, log in to Douyin, sync favorites or 收藏, process one or a small batch of saved videos, resume a failed item, inspect or correct published knowledge, publish to the results archive/Obsidian, inspect pipeline status, or operate an installed douyin-knowledge release from Codex or another host that has passed the documented capability gate.
+description: Convert a user's own Douyin favorites into a private, reconciled local knowledge library with a user-chosen human-readable results archive, using the douyin-knowledge JSON CLI, local ASR/OCR, bounded semantic JSON candidates, deterministic validation, Obsidian publication, checkpoints, legacy-result migration, and post-publication correction. Use when the user asks to configure or organize where Douyin results are stored, migrate historical results, log in to Douyin, sync favorites or 收藏, process one or a small batch of saved videos, resume a failed item, inspect or correct published knowledge, publish to the results archive/Obsidian, inspect pipeline status, or operate an installed douyin-knowledge release from Codex or another host that has passed the documented capability gate.
 ---
 
 # Douyin Knowledge
@@ -34,6 +34,11 @@ instance directory. Never treat an assistant message as completion evidence.
 
 - For first use, initialize, establish the user-chosen results archive, diagnose,
   then explain the login confirmation gate.
+- For historical results still under the private instance's legacy `library`, first
+  configure the user-chosen archive, describe that migration copies and verifies
+  complete entries while preserving the source and historical publication journal,
+  obtain explicit confirmation, then run `migrate results`. Treat its verified count
+  as migration evidence only; it does not create a new accepted publication.
 - For collection refresh, run confirmed `sync`; it must not download media.
 - For one item, use `plan --limit 1`, select that returned `job_ref`, then run a
   confirmed no-publish canary.
@@ -71,9 +76,9 @@ instance directory. Never treat an assistant message as completion evidence.
 
 ## Enforce Boundaries
 
-- Require explicit confirmation for results-folder configuration, login, sync,
-  run/download/local analysis, canary, and publish. Treat publish as a separate
-  confirmation from analysis.
+- Require explicit confirmation for results-folder configuration, historical-results
+  migration, login, sync, run/download/local analysis, canary, and publish. Treat
+  publish as a separate confirmation from analysis.
 - Keep publishing disabled by default. Use `canary --limit 1 --no-publish` first.
 - Never call an undocumented "next item" selector. Use `plan`, an explicit limit,
   and stable `job_ref` values.

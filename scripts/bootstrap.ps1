@@ -14,8 +14,18 @@ $Cli = Join-Path $VirtualEnvironment "Scripts\douyin-knowledge.exe"
 $InstanceBinding = Join-Path $VirtualEnvironment "instance-root.txt"
 
 if (-not $InstanceRoot) {
-    if (-not $env:LOCALAPPDATA) { throw "LOCALAPPDATA is unavailable; pass -InstanceRoot." }
-    $InstanceRoot = Join-Path $env:LOCALAPPDATA "douyin-knowledge"
+    if (Test-Path -LiteralPath $InstanceBinding -PathType Leaf) {
+        $InstanceRoot = (Get-Content -Raw -Encoding UTF8 -LiteralPath $InstanceBinding).Trim()
+        if (-not $InstanceRoot) {
+            throw "The existing instance binding is empty; pass -InstanceRoot explicitly."
+        }
+    }
+    else {
+        if (-not $env:LOCALAPPDATA) {
+            throw "LOCALAPPDATA is unavailable; pass -InstanceRoot."
+        }
+        $InstanceRoot = Join-Path $env:LOCALAPPDATA "douyin-knowledge"
+    }
 }
 $InstanceRoot = [System.IO.Path]::GetFullPath($InstanceRoot)
 if ($InstanceRoot -eq [System.IO.Path]::GetFullPath($Repository)) {

@@ -30,6 +30,7 @@ instance without putting either absolute path in conversational output.
 <invoke> doctor --json
 <invoke> status --json
 <invoke> configure results --path <absolute-folder> --confirm --json
+<invoke> migrate results --confirm --json
 <invoke> plan --limit 1 --json
 <invoke> login --confirm --json
 <invoke> model install --name small --confirm --json
@@ -69,8 +70,17 @@ The archive layout is stable and intended for browsing:
 Chinese characters and spaces are preserved after Windows path sanitization. A
 different video with the same category and title receives `标题 (2)`, then `(3)`.
 An existing job keeps its established directory on correction so links remain
-stable. Once journaled `results/` targets exist, the CLI refuses to rebind the root;
-moving a published archive requires a future migration workflow, not a config edit.
+stable. Once journaled `results/` targets exist, the CLI refuses to rebind the root.
+
+`migrate results` handles the one-time transition from the private instance's legacy
+`library/` into the configured archive. It copies only complete human-readable
+entries, verifies directory hashes, rebuilds `00-总索引`, updates the registry for
+future corrections, and preserves the legacy source and old publication journal.
+It is resumable and idempotent: a verified existing copy is reused, while a changed
+same-entry target produces a controlled conflict instead of being overwritten. The
+command returns only counts, booleans, and a relative state handle. Migration does
+not change collection or publication status and is not a general relocation command
+for an already journaled `results/` archive.
 
 `run` stops at `download`, `analysis`, `packet`, or `staging`. It never invokes an AI
 model and never publishes. `canary` is fixed at one item and stops at `packet`.

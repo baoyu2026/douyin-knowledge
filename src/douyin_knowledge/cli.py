@@ -31,6 +31,10 @@ from douyin_knowledge.result_archive import (
     configured_results_root,
     default_results_config,
 )
+from douyin_knowledge.results_migration import (
+    ResultsMigrationError,
+    migrate_legacy_results,
+)
 from douyin_knowledge.review import list_reviews, record_review
 
 INSTANCE_DIRS = (
@@ -600,6 +604,11 @@ def build_parser() -> argparse.ArgumentParser:
     configure_results.add_argument("--path", type=Path, required=True)
     configure_results.add_argument("--confirm", action="store_true")
     configure_results.add_argument("--json", action="store_true")
+    migrate = subparsers.add_parser("migrate")
+    migrate_commands = migrate.add_subparsers(dest="migrate_command", required=True)
+    migrate_results = migrate_commands.add_parser("results")
+    migrate_results.add_argument("--confirm", action="store_true")
+    migrate_results.add_argument("--json", action="store_true")
     return parser
 
 
@@ -625,6 +634,15 @@ def main(argv: list[str] | None = None) -> int:
                 "configure_results",
                 data,
                 summary="human-readable results archive configured",
+            )
+        elif operation == "migrate":
+            if not args.confirm:
+                _confirmation("migrate results")
+            data = migrate_legacy_results(root)
+            payload = success(
+                "migrate_results",
+                data,
+                summary=f"verified {data['verified']} migrated legacy results",
             )
         elif operation == "plan":
             payload = _plan(root, int(args.limit))
@@ -785,6 +803,14 @@ def main(argv: list[str] | None = None) -> int:
             exc.code,
             str(exc),
             action,
+        )
+        payload = failure(operation, error)
+        exit_code = error.exit_code
+    except ResultsMigrationError as exc:
+        error = CliError(
+            exc.code,
+            str(exc),
+            "preserve both roots, correct the reported conflict, then retry migration",
         )
         payload = failure(operation, error)
         exit_code = error.exit_code
