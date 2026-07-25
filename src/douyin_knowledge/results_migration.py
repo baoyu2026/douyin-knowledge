@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 import uuid
+from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -15,6 +16,7 @@ from app.analyze_video import JOB_ID_PATTERN
 from app.publish_library import INDEX_DIR_NAME, generate_indexes
 from douyin_knowledge.result_archive import (
     LEGACY_LIBRARY_ROOT,
+    RESULTS_LAYOUT,
     RESULTS_MIGRATION_STATE,
     ResultsConfigError,
     configured_results_root,
@@ -27,6 +29,13 @@ REQUIRED_ENTRY_PATHS = (
     Path("附件/完整时间轴.md"),
     Path("精选关键帧"),
 )
+ARTIFACT_NAMES = {
+    Path("内容整理.md"): "knowledge_note",
+    Path("原视频.mp4"): "source_video",
+    Path("资料信息.yml"): "entry_manifest",
+    Path("附件/完整时间轴.md"): "timeline",
+    Path("精选关键帧"): "keyframes_directory",
+}
 
 
 class ResultsMigrationError(RuntimeError):
@@ -50,16 +59,42 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _tree_digest(path: Path) -> str:
+    return _tree_digest_with_files(path, {})
+
+
+def _file_digest(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _tree_digest_with_files(path: Path, synthetic: dict[str, bytes]) -> str:
     hasher = hashlib.sha256()
     if path.is_symlink() or any(item.is_symlink() for item in path.rglob("*")):
         raise ResultsMigrationError(
             "results_migration_symlink", "legacy results must not contain symbolic links"
         )
-    files = sorted(item for item in path.rglob("*") if item.is_file())
-    for item in files:
-        relative = item.relative_to(path).as_posix().encode("utf-8")
-        hasher.update(len(relative).to_bytes(8, "big"))
-        hasher.update(relative)
+    files = {
+        item.relative_to(path).as_posix(): item
+        for item in path.rglob("*")
+        if item.is_file()
+    }
+    for relative in sorted(set(files) | set(synthetic)):
+        item = files.get(relative)
+        body = synthetic.get(relative)
+        if item is not None and body is not None:
+            raise ResultsMigrationError(
+                "results_migration_manifest_invalid", "a generated artifact already exists"
+            )
+        encoded_relative = relative.encode("utf-8")
+        hasher.update(len(encoded_relative).to_bytes(8, "big"))
+        hasher.update(encoded_relative)
+        if body is not None:
+            hasher.update(body)
+            continue
+        assert item is not None
         with item.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 hasher.update(chunk)
@@ -79,6 +114,109 @@ def _entry_ref(path: Path) -> str:
             "results_migration_manifest_invalid", "a legacy result has no stable entry reference"
         )
     return value
+
+
+def _registered_entry(database: Path, instance_root: Path, source: Path) -> tuple[str, str]:
+    if not database.is_file():
+        raise ResultsMigrationError(
+            "results_migration_manifest_invalid",
+            "a legacy result without a manifest is not registered",
+        )
+    try:
+        with sqlite3.connect(database) as connection:
+            columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(collection_items)")
+            }
+            if not {"job_id", "library_path"}.issubset(columns):
+                raise ResultsMigrationError(
+                    "results_migration_manifest_invalid",
+                    "the legacy result registry cannot resolve a missing manifest",
+                )
+            path_matches: list[str] = []
+            for job_id, library_path in connection.execute(
+                "SELECT job_id, library_path FROM collection_items WHERE library_path IS NOT NULL"
+            ):
+                if not library_path:
+                    continue
+                registered = Path(str(library_path))
+                if not registered.is_absolute():
+                    registered = instance_root / registered
+                if registered.resolve() == source.resolve():
+                    path_matches.append(str(job_id))
+            method = "registered_path"
+            matches = path_matches
+            if not matches and "media_sha256" in columns:
+                media_digest = _file_digest(source / "原视频.mp4")
+                method = "media_fingerprint"
+                matches = [
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT job_id FROM collection_items "
+                        "WHERE lower(media_sha256) = ?",
+                        (media_digest,),
+                    )
+                ]
+    except sqlite3.Error as exc:
+        raise ResultsMigrationError(
+            "results_migration_registry_failed", "the legacy result registry is unreadable"
+        ) from exc
+    if len(matches) != 1 or not JOB_ID_PATTERN.fullmatch(matches[0]):
+        raise ResultsMigrationError(
+            "results_migration_manifest_invalid",
+            "a legacy result without a manifest has no unique registered entry",
+        )
+    return matches[0], method
+
+
+def _registered_entry_ref(database: Path, instance_root: Path, source: Path) -> str:
+    return _registered_entry(database, instance_root, source)[0]
+
+
+def _select_authoritative_sources(
+    source_refs: dict[str, tuple[str, str | None, str]],
+) -> tuple[dict[str, tuple[str, str | None, str]], int]:
+    grouped: dict[str, list[str]] = {}
+    for source_handle, (entry_ref, _manifest, _method) in source_refs.items():
+        grouped.setdefault(entry_ref, []).append(source_handle)
+    selected: dict[str, tuple[str, str | None, str]] = {}
+    skipped = 0
+    for handles in grouped.values():
+        if len(handles) == 1:
+            handle = handles[0]
+            selected[handle] = source_refs[handle]
+            continue
+        authoritative = [
+            handle
+            for handle in handles
+            if source_refs[handle][2] != "media_fingerprint"
+        ]
+        if len(authoritative) != 1:
+            raise ResultsMigrationError(
+                "results_migration_duplicate_reference",
+                "multiple legacy results use the same stable entry reference",
+            )
+        selected[authoritative[0]] = source_refs[authoritative[0]]
+        skipped += len(handles) - 1
+    return selected, skipped
+
+
+def _generated_manifest(entry_ref: str, source: Path) -> str:
+    return yaml.safe_dump(
+        {
+            "schema_version": 1,
+            "entry_ref": entry_ref,
+            "title": source.name,
+            "category": source.parent.name,
+            "layout": RESULTS_LAYOUT,
+            "source_video": "原视频.mp4",
+            "knowledge_note": "内容整理.md",
+            "timeline": "附件/完整时间轴.md",
+            "keyframes": "精选关键帧/",
+            "migrated_from_legacy": True,
+        },
+        allow_unicode=True,
+        sort_keys=False,
+    )
 
 
 def _discover_entries(legacy_root: Path) -> list[Path]:
@@ -107,12 +245,16 @@ def _discover_entries(legacy_root: Path) -> list[Path]:
                 )
             if not entry.is_dir():
                 continue
-            required = [entry / relative for relative in REQUIRED_ENTRY_PATHS]
+            required = [
+                entry / relative
+                for relative in REQUIRED_ENTRY_PATHS
+                if relative != Path("资料信息.yml")
+            ]
             if any(not item.exists() for item in required):
                 raise ResultsMigrationError(
                     "results_migration_entry_incomplete", "a legacy result is incomplete"
                 )
-            if any(not item.is_file() for item in required[:4]) or not required[4].is_dir():
+            if any(not item.is_file() for item in required[:3]) or not required[3].is_dir():
                 raise ResultsMigrationError(
                     "results_migration_entry_incomplete", "a legacy result has invalid artifacts"
                 )
@@ -123,6 +265,133 @@ def _discover_entries(legacy_root: Path) -> list[Path]:
                 )
             entries.append(entry)
     return entries
+
+
+def inspect_legacy_results(instance_root: Path) -> dict[str, Any]:
+    instance_root = instance_root.resolve()
+    legacy_root = instance_root / LEGACY_LIBRARY_ROOT
+    checkpoint = _checkpoint_records(instance_root / RESULTS_MIGRATION_STATE)
+    if not legacy_root.exists():
+        return {
+            "discovered": 0,
+            "complete": 0,
+            "incomplete": 0,
+            "repairable": 0,
+            "blocked": 0,
+            "duplicates_skipped": 0,
+            "migration_ready": True,
+            "issues": {},
+        }
+    issues: Counter[str] = Counter()
+    discovered = 0
+    complete = 0
+    repairable = 0
+    resolved_refs: dict[str, tuple[str, str | None, str]] = {}
+    if legacy_root.is_symlink() or not legacy_root.is_dir():
+        issues["unsafe_legacy_root"] += 1
+    else:
+        for category in sorted(legacy_root.iterdir()):
+            if category.name == INDEX_DIR_NAME:
+                continue
+            if category.is_symlink():
+                issues["symbolic_link"] += 1
+                continue
+            if not category.is_dir():
+                continue
+            for entry in sorted(category.iterdir()):
+                if entry.is_symlink():
+                    discovered += 1
+                    issues["symbolic_link"] += 1
+                    continue
+                if not entry.is_dir():
+                    continue
+                discovered += 1
+                entry_issues = 0
+                resolved_entry: tuple[str, str | None, str] | None = None
+                if any(item.is_symlink() for item in entry.rglob("*")):
+                    issues["symbolic_link"] += 1
+                    entry_issues += 1
+                for relative, name in ARTIFACT_NAMES.items():
+                    artifact = entry / relative
+                    expected_directory = relative == Path("精选关键帧")
+                    valid = artifact.is_dir() if expected_directory else artifact.is_file()
+                    if not valid:
+                        issues[f"missing_{name}"] += 1
+                        entry_issues += 1
+                frames = entry / "精选关键帧"
+                if frames.is_dir() and not any(item.is_file() for item in frames.iterdir()):
+                    issues["empty_keyframes"] += 1
+                    entry_issues += 1
+                manifest = entry / "资料信息.yml"
+                if manifest.is_file():
+                    try:
+                        entry_ref = _entry_ref(entry)
+                    except ResultsMigrationError:
+                        issues["invalid_entry_manifest"] += 1
+                        entry_issues += 1
+                    else:
+                        resolved_entry = (
+                            entry_ref,
+                            None,
+                            "manifest",
+                        )
+                else:
+                    try:
+                        source_handle = entry.relative_to(legacy_root).as_posix()
+                        previous = checkpoint.get(source_handle)
+                        if previous is not None and "entry_ref" in previous:
+                            entry_ref = previous["entry_ref"]
+                            method = "checkpoint"
+                        else:
+                            entry_ref, method = _registered_entry(
+                                instance_root / "data" / "knowledge.db",
+                                instance_root,
+                                entry,
+                            )
+                    except ResultsMigrationError:
+                        pass
+                    else:
+                        issues["repairable_entry_manifest"] += 1
+                        repairable += 1
+                        issues["missing_entry_manifest"] -= 1
+                        if issues["missing_entry_manifest"] == 0:
+                            del issues["missing_entry_manifest"]
+                        entry_issues -= 1
+                        resolved_entry = (
+                            entry_ref,
+                            None,
+                            method,
+                        )
+                if entry_issues == 0:
+                    complete += 1
+                    assert resolved_entry is not None
+                    resolved_refs[entry.relative_to(legacy_root).as_posix()] = resolved_entry
+    duplicates_skipped = 0
+    try:
+        _selected, duplicates_skipped = _select_authoritative_sources(resolved_refs)
+    except ResultsMigrationError:
+        duplicate_counts = Counter(
+            entry_ref for entry_ref, _manifest, _method in resolved_refs.values()
+        )
+        conflicting = sum(count for count in duplicate_counts.values() if count > 1)
+        issues["duplicate_reference_conflict"] += conflicting
+        complete -= conflicting
+    blocked = discovered - complete
+    blocking_issues = {
+        name: count
+        for name, count in issues.items()
+        if name != "repairable_entry_manifest"
+    }
+    return {
+        "discovered": discovered,
+        "complete": complete,
+        "incomplete": blocked,
+        "repairable": repairable,
+        "blocked": blocked,
+        "duplicates_skipped": duplicates_skipped,
+        "migration_ready": blocked == 0 and not blocking_issues,
+        "issues": dict(sorted(issues.items())),
+    }
 
 
 def _checkpoint_records(path: Path) -> dict[str, dict[str, str]]:
@@ -152,11 +421,28 @@ def _checkpoint_records(path: Path) -> dict[str, dict[str, str]]:
         source = raw.get("source")
         target = raw.get("target")
         digest = raw.get("sha256")
+        source_digest = raw.get("source_sha256", digest)
+        entry_ref = raw.get("entry_ref")
         paths = (source, target)
         if (
-            not all(isinstance(value, str) and value for value in (*paths, digest))
+            not all(
+                isinstance(value, str) and value
+                for value in (*paths, digest, source_digest)
+            )
             or len(str(digest)) != 64
             or any(character not in "0123456789abcdef" for character in str(digest))
+            or len(str(source_digest)) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in str(source_digest)
+            )
+            or (
+                entry_ref is not None
+                and (
+                    not isinstance(entry_ref, str)
+                    or not JOB_ID_PATTERN.fullmatch(entry_ref)
+                )
+            )
             or any(
                 PurePosixPath(str(value)).is_absolute()
                 or "\\" in str(value)
@@ -173,7 +459,10 @@ def _checkpoint_records(path: Path) -> dict[str, dict[str, str]]:
             "source": str(source),
             "target": str(target),
             "sha256": str(digest),
+            "source_sha256": str(source_digest),
         }
+        if entry_ref is not None:
+            records[str(source)]["entry_ref"] = entry_ref
     targets = [record["target"] for record in records.values()]
     if len(targets) != len(set(targets)):
         raise ResultsMigrationError(
@@ -210,7 +499,13 @@ def _target_for(destination: Path, source: Path, entry_ref: str) -> Path:
     )
 
 
-def _copy_verified(source: Path, target: Path, expected_digest: str) -> str:
+def _copy_verified(
+    source: Path,
+    target: Path,
+    expected_digest: str,
+    *,
+    generated_manifest: str | None,
+) -> str:
     if target.is_dir():
         if _tree_digest(target) != expected_digest:
             raise ResultsMigrationError(
@@ -225,6 +520,10 @@ def _copy_verified(source: Path, target: Path, expected_digest: str) -> str:
     temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
     try:
         shutil.copytree(source, temporary, copy_function=shutil.copy2)
+        if generated_manifest is not None:
+            (temporary / "资料信息.yml").write_text(
+                generated_manifest, encoding="utf-8", newline="\n"
+            )
         if _tree_digest(temporary) != expected_digest:
             raise ResultsMigrationError(
                 "results_migration_verification_failed", "a copied result failed verification"
@@ -261,11 +560,33 @@ def _register_target(
             }
             if not {"job_id", "library_path"}.issubset(columns):
                 return False
+            selected = "library_path"
+            if "media_sha256" in columns:
+                selected += ", media_sha256"
             row = connection.execute(
-                "SELECT library_path FROM collection_items WHERE job_id = ?", (entry_ref,)
+                f"SELECT {selected} FROM collection_items WHERE job_id = ?", (entry_ref,)
             ).fetchone()
-            if row is None or not row[0]:
+            if row is None:
                 return False
+            if not row[0]:
+                if "media_sha256" not in columns or not row[1]:
+                    return False
+                media_digest = _file_digest(source / "原视频.mp4")
+                matching_jobs = connection.execute(
+                    "SELECT job_id FROM collection_items WHERE lower(media_sha256) = ?",
+                    (media_digest,),
+                ).fetchall()
+                if len(matching_jobs) != 1 or str(matching_jobs[0][0]) != entry_ref:
+                    raise ResultsMigrationError(
+                        "results_migration_registry_mismatch",
+                        "a legacy result has no unique registered media fingerprint",
+                    )
+                cursor = connection.execute(
+                    "UPDATE collection_items SET library_path = ? "
+                    "WHERE job_id = ? AND library_path IS NULL",
+                    (str(target), entry_ref),
+                )
+                return cursor.rowcount == 1
             registered = Path(str(row[0]))
             if not registered.is_absolute():
                 registered = instance_root / registered
@@ -304,19 +625,37 @@ def migrate_legacy_results(instance_root: Path) -> dict[str, Any]:
             "results_migration_same_root", "the configured results root is the legacy library"
         )
 
-    entries = _discover_entries(legacy_root)
-    entry_refs: dict[str, Path] = {}
-    source_refs: dict[str, str] = {}
-    for source in entries:
-        entry_ref = _entry_ref(source)
-        if entry_ref in entry_refs:
-            raise ResultsMigrationError(
-                "results_migration_duplicate_reference",
-                "multiple legacy results use the same stable entry reference",
-            )
-        entry_refs[entry_ref] = source
-        source_refs[source.relative_to(legacy_root).as_posix()] = entry_ref
+    discovered_entries = _discover_entries(legacy_root)
     checkpoint = _checkpoint_records(instance_root / RESULTS_MIGRATION_STATE)
+    source_refs: dict[str, tuple[str, str | None, str]] = {}
+    for source in discovered_entries:
+        source_handle = source.relative_to(legacy_root).as_posix()
+        manifest = source / "资料信息.yml"
+        generated_manifest = None
+        if manifest.is_file():
+            entry_ref = _entry_ref(source)
+            method = "manifest"
+        else:
+            previous = checkpoint.get(source_handle)
+            if previous is not None and "entry_ref" in previous:
+                entry_ref = previous["entry_ref"]
+                method = "checkpoint"
+            else:
+                entry_ref, method = _registered_entry(
+                    instance_root / "data" / "knowledge.db", instance_root, source
+                )
+            generated_manifest = _generated_manifest(entry_ref, source)
+        source_refs[source_handle] = (
+            entry_ref,
+            generated_manifest,
+            method,
+        )
+    source_refs, duplicates_skipped = _select_authoritative_sources(source_refs)
+    entries = [
+        source
+        for source in discovered_entries
+        if source.relative_to(legacy_root).as_posix() in source_refs
+    ]
     if any(source not in source_refs for source in checkpoint):
         raise ResultsMigrationError(
             "results_migration_source_changed",
@@ -328,11 +667,18 @@ def migrate_legacy_results(instance_root: Path) -> dict[str, Any]:
     records: list[dict[str, str]] = []
     for source in entries:
         source_handle = source.relative_to(legacy_root).as_posix()
-        entry_ref = source_refs[source_handle]
-        digest = _tree_digest(source)
+        entry_ref, generated_manifest, _method = source_refs[source_handle]
+        source_digest = _tree_digest(source)
+        synthetic = (
+            {"资料信息.yml": generated_manifest.encode("utf-8")}
+            if generated_manifest is not None
+            else {}
+        )
+        digest = _tree_digest_with_files(source, synthetic)
         previous = checkpoint.get(source_handle)
         if previous is not None:
-            if previous["sha256"] != digest:
+            previous_source_digest = previous.get("source_sha256", previous["sha256"])
+            if previous_source_digest != source_digest or previous["sha256"] != digest:
                 raise ResultsMigrationError(
                     "results_migration_source_changed",
                     "a preserved legacy result changed after migration began",
@@ -347,7 +693,12 @@ def migrate_legacy_results(instance_root: Path) -> dict[str, Any]:
                 ) from exc
         else:
             target = _target_for(destination, source, entry_ref)
-        outcome = _copy_verified(source, target, digest)
+        outcome = _copy_verified(
+            source,
+            target,
+            digest,
+            generated_manifest=generated_manifest,
+        )
         copied += int(outcome == "copied")
         reused += int(outcome == "reused")
         records.append(
@@ -355,6 +706,8 @@ def migrate_legacy_results(instance_root: Path) -> dict[str, Any]:
                 "source": source_handle,
                 "target": target.relative_to(destination).as_posix(),
                 "sha256": digest,
+                "source_sha256": source_digest,
+                "entry_ref": entry_ref,
             }
         )
         _atomic_json(
@@ -378,11 +731,17 @@ def migrate_legacy_results(instance_root: Path) -> dict[str, Any]:
     )
     return {
         "status": "migrated" if entries else "no_work",
-        "discovered": len(entries),
+        "discovered": len(discovered_entries),
+        "selected": len(entries),
+        "duplicates_skipped": duplicates_skipped,
         "copied": copied,
         "reused": reused,
         "verified": len(entries),
         "registered": registered,
+        "manifests_generated": sum(
+            generated_manifest is not None
+            for _, generated_manifest, _method in source_refs.values()
+        ),
         "source_preserved": True,
         "index_rebuilt": True,
         "state_handle": RESULTS_MIGRATION_STATE.as_posix(),

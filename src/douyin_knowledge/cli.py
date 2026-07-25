@@ -33,6 +33,7 @@ from douyin_knowledge.result_archive import (
 )
 from douyin_knowledge.results_migration import (
     ResultsMigrationError,
+    inspect_legacy_results,
     migrate_legacy_results,
 )
 from douyin_knowledge.review import list_reviews, record_review
@@ -606,6 +607,8 @@ def build_parser() -> argparse.ArgumentParser:
     configure_results.add_argument("--json", action="store_true")
     migrate = subparsers.add_parser("migrate")
     migrate_commands = migrate.add_subparsers(dest="migrate_command", required=True)
+    migrate_inspect = migrate_commands.add_parser("inspect")
+    migrate_inspect.add_argument("--json", action="store_true")
     migrate_results = migrate_commands.add_parser("results")
     migrate_results.add_argument("--confirm", action="store_true")
     migrate_results.add_argument("--json", action="store_true")
@@ -636,14 +639,22 @@ def main(argv: list[str] | None = None) -> int:
                 summary="human-readable results archive configured",
             )
         elif operation == "migrate":
-            if not args.confirm:
-                _confirmation("migrate results")
-            data = migrate_legacy_results(root)
-            payload = success(
-                "migrate_results",
-                data,
-                summary=f"verified {data['verified']} migrated legacy results",
-            )
+            if args.migrate_command == "inspect":
+                data = inspect_legacy_results(root)
+                payload = success(
+                    "migrate_inspect",
+                    data,
+                    summary=f"inspected {data['discovered']} legacy results",
+                )
+            else:
+                if not args.confirm:
+                    _confirmation("migrate results")
+                data = migrate_legacy_results(root)
+                payload = success(
+                    "migrate_results",
+                    data,
+                    summary=f"verified {data['verified']} migrated legacy results",
+                )
         elif operation == "plan":
             payload = _plan(root, int(args.limit))
         elif operation == "packet":

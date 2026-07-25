@@ -8,6 +8,12 @@ reused. A `results_migration_conflict` means the same entry differs between root
 do not overwrite either copy until the difference is resolved. Migration never
 changes accepted/completed state.
 
+For `results_migration_entry_incomplete`, do not retry the same migration blindly.
+Run read-only `migrate inspect` and use only its issue counts to determine whether a
+legacy-format compatibility repair is required. Entries reported as `repairable`
+may be migrated normally; the CLI generates their missing manifests only in the new
+copy. Stop for any entry reported as `blocked`.
+
 Use `status`, then `reconcile --job-ref <ref>`. Resume only the same stable `job_ref`.
 Do not delete checkpoints, quarantine, publication intents, backups, or accepted
 artifacts to make a retry appear clean.

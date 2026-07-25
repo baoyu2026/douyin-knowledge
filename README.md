@@ -110,7 +110,15 @@ $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 & $DK migrate results --confirm --json
 ```
 
-迁移会复制结构完整的历史成果、逐条校验哈希、重建 `00-总索引`，并登记新位置供后续纠错复用。重复执行会复用已经验证的副本；如果同一成果在目标目录中被改过，命令会停止并保留两边文件，不会覆盖。旧 `library` 和历史发布 journal 始终保留，所以迁移成功不等于视频被重新发布，也不会改写 `accepted` 或 `completed` 状态。
+如迁移报告旧成果结构不完整，可先运行只读检查：
+
+```powershell
+& $DK migrate inspect --json
+```
+
+检查结果只返回完整/不完整数量、可自动兼容数量和缺项类型数量，不公开标题、任务引用或路径。旧版本成果如果只有 `资料信息.yml` 缺失，并且能通过旧路径或原视频 SHA-256 指纹唯一对应到数据库记录，会计入 `repairable`，不视为损坏；指纹重复时不会猜测。
+
+迁移会复制结构完整的历史成果、逐条校验来源与新副本哈希、重建 `00-总索引`，并登记新位置供后续纠错复用。对于上述旧格式成果，`资料信息.yml` 只会生成在新副本中，旧目录保持原样。同一视频存在旧副本时，以数据库原登记路径对应的成果为权威版本，其余保留在旧目录并计入 `duplicates_skipped`；没有唯一权威版本时迁移会停止。重复执行会复用已经验证的副本；如果同一成果在目标目录中被改过，命令会停止并保留两边文件，不会覆盖。旧 `library` 和历史发布 journal 始终保留，所以迁移成功不等于视频被重新发布，也不会改写 `accepted` 或 `completed` 状态。
 
 成果库开始参与新发布对账后不能直接改根目录，否则历史 journal 无法确认原文件。当前迁移命令只负责从旧版 `library` 过渡到首次配置的人类成果库，不支持搬迁一个已经产生 `results/` journal 的成果库。
 
@@ -254,7 +262,7 @@ git pull
 .\.venv\Scripts\python.exe -m compileall -q app src
 .\.venv\Scripts\python.exe -m build
 .\scripts\test-distribution.ps1 `
-  -WheelPath .\dist\douyin_knowledge-1.4.0-py3-none-any.whl `
+  -WheelPath .\dist\douyin_knowledge-1.4.1-py3-none-any.whl `
   -Python .\.venv\Scripts\python.exe
 ```
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -11,6 +12,7 @@ from douyin_knowledge.cli import main
 from douyin_knowledge.result_archive import ResultsConfigError, configure_results_root
 from douyin_knowledge.results_migration import (
     ResultsMigrationError,
+    inspect_legacy_results,
     migrate_legacy_results,
 )
 
@@ -75,6 +77,33 @@ def _registry(instance: Path, entry_ref: str, source: Path) -> Path:
     return database
 
 
+def _registry_by_media(
+    instance: Path,
+    entry_ref: str,
+    source: Path,
+    *,
+    duplicate_entry_ref: str | None = None,
+) -> Path:
+    database = instance / "data" / "knowledge.db"
+    database.parent.mkdir(parents=True)
+    media_digest = hashlib.sha256((source / "原视频.mp4").read_bytes()).hexdigest()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE collection_items("
+            "job_id TEXT PRIMARY KEY, library_path TEXT, media_sha256 TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO collection_items VALUES (?, NULL, ?)",
+            (entry_ref, media_digest),
+        )
+        if duplicate_entry_ref is not None:
+            connection.execute(
+                "INSERT INTO collection_items VALUES (?, NULL, ?)",
+                (duplicate_entry_ref, media_digest),
+            )
+    return database
+
+
 def test_migration_copies_verifies_indexes_registers_and_is_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -92,10 +121,13 @@ def test_migration_copies_verifies_indexes_registers_and_is_idempotent(
     assert first == {
         "status": "migrated",
         "discovered": 1,
+        "selected": 1,
+        "duplicates_skipped": 0,
         "copied": 1,
         "reused": 0,
         "verified": 1,
         "registered": 1,
+        "manifests_generated": 0,
         "source_preserved": True,
         "index_rebuilt": True,
         "state_handle": "data/migrations/results-v1.json",
@@ -180,6 +212,246 @@ def test_migration_rejects_an_incomplete_legacy_directory(tmp_path: Path) -> Non
         migrate_legacy_results(instance)
 
     assert error.value.code == "results_migration_entry_incomplete"
+
+
+def test_migration_inspection_returns_only_issue_counts(tmp_path: Path) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    title = "不应出现在输出中的标题"
+    incomplete = instance / "library" / "AI 工具" / title
+    incomplete.mkdir(parents=True)
+    (incomplete / "原视频.mp4").write_bytes(b"video")
+
+    result = inspect_legacy_results(instance)
+
+    assert result["discovered"] == 1
+    assert result["complete"] == 0
+    assert result["incomplete"] == 1
+    assert result["repairable"] == 0
+    assert result["blocked"] == 1
+    assert result["duplicates_skipped"] == 0
+    assert result["migration_ready"] is False
+    assert result["issues"] == {
+        "missing_entry_manifest": 1,
+        "missing_keyframes_directory": 1,
+        "missing_knowledge_note": 1,
+        "missing_timeline": 1,
+    }
+    assert title not in json.dumps(result, ensure_ascii=False)
+
+
+def test_missing_legacy_manifest_is_repaired_only_in_copy_and_reused(
+    tmp_path: Path,
+) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    entry_ref = "aweme-0123456789abcdefabcd"
+    source = _legacy_entry(instance, entry_ref=entry_ref)
+    (source / "资料信息.yml").unlink()
+    database = _registry(instance, entry_ref, source)
+    destination = tmp_path / "results"
+    configure_results_root(instance, destination)
+
+    inspection = inspect_legacy_results(instance)
+
+    assert inspection == {
+        "discovered": 1,
+        "complete": 1,
+        "incomplete": 0,
+        "repairable": 1,
+        "blocked": 0,
+        "duplicates_skipped": 0,
+        "migration_ready": True,
+        "issues": {"repairable_entry_manifest": 1},
+    }
+
+    first = migrate_legacy_results(instance)
+
+    target = destination / "AI 工具" / "清晰标题"
+    assert first["copied"] == 1
+    assert first["manifests_generated"] == 1
+    assert not (source / "资料信息.yml").exists()
+    manifest = yaml.safe_load((target / "资料信息.yml").read_text(encoding="utf-8"))
+    assert manifest["entry_ref"] == entry_ref
+    assert manifest["migrated_from_legacy"] is True
+    state = json.loads(
+        (instance / "data" / "migrations" / "results-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    record = state["entries"][0]
+    assert record["entry_ref"] == entry_ref
+    assert record["source_sha256"] != record["sha256"]
+    with sqlite3.connect(database) as connection:
+        assert Path(
+            connection.execute(
+                "SELECT library_path FROM collection_items WHERE job_id = ?", (entry_ref,)
+            ).fetchone()[0]
+        ) == target
+
+    second = migrate_legacy_results(instance)
+
+    assert second["copied"] == 0
+    assert second["reused"] == 1
+    assert second["manifests_generated"] == 1
+    assert not (destination / "AI 工具" / "清晰标题 (2)").exists()
+    assert not (source / "资料信息.yml").exists()
+
+
+def test_missing_legacy_manifest_without_unique_registry_is_blocked(
+    tmp_path: Path,
+) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    source = _legacy_entry(instance)
+    (source / "资料信息.yml").unlink()
+    configure_results_root(instance, tmp_path / "results")
+
+    inspection = inspect_legacy_results(instance)
+
+    assert inspection["migration_ready"] is False
+    assert inspection["repairable"] == 0
+    assert inspection["blocked"] == 1
+    assert inspection["issues"] == {"missing_entry_manifest": 1}
+    with pytest.raises(ResultsMigrationError) as error:
+        migrate_legacy_results(instance)
+    assert error.value.code == "results_migration_manifest_invalid"
+
+
+def test_missing_manifest_uses_unique_registered_media_fingerprint(
+    tmp_path: Path,
+) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    entry_ref = "aweme-0123456789abcdefabcd"
+    source = _legacy_entry(instance, entry_ref=entry_ref)
+    (source / "资料信息.yml").unlink()
+    database = _registry_by_media(instance, entry_ref, source)
+    destination = tmp_path / "results"
+    configure_results_root(instance, destination)
+
+    inspection = inspect_legacy_results(instance)
+    result = migrate_legacy_results(instance)
+
+    target = destination / "AI 工具" / "清晰标题"
+    assert inspection["migration_ready"] is True
+    assert inspection["repairable"] == 1
+    assert result["manifests_generated"] == 1
+    with sqlite3.connect(database) as connection:
+        registered = connection.execute(
+            "SELECT library_path FROM collection_items WHERE job_id = ?", (entry_ref,)
+        ).fetchone()[0]
+    assert Path(registered) == target
+    assert not (source / "资料信息.yml").exists()
+
+
+def test_duplicate_registered_media_fingerprint_does_not_guess_entry_ref(
+    tmp_path: Path,
+) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    source = _legacy_entry(instance)
+    (source / "资料信息.yml").unlink()
+    _registry_by_media(
+        instance,
+        "aweme-0123456789abcdefabcd",
+        source,
+        duplicate_entry_ref="aweme-fedcba9876543210abcd",
+    )
+    configure_results_root(instance, tmp_path / "results")
+
+    inspection = inspect_legacy_results(instance)
+
+    assert inspection["migration_ready"] is False
+    assert inspection["blocked"] == 1
+    with pytest.raises(ResultsMigrationError) as error:
+        migrate_legacy_results(instance)
+    assert error.value.code == "results_migration_manifest_invalid"
+
+
+def test_registered_path_wins_over_stale_media_duplicate(tmp_path: Path) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    entry_ref = "aweme-0123456789abcdefabcd"
+    canonical = _legacy_entry(instance, entry_ref=entry_ref, title="权威成果")
+    stale = _legacy_entry(instance, entry_ref=entry_ref, title="旧副本")
+    (canonical / "资料信息.yml").unlink()
+    (stale / "资料信息.yml").unlink()
+    database = instance / "data" / "knowledge.db"
+    database.parent.mkdir(parents=True)
+    media_digest = hashlib.sha256((canonical / "原视频.mp4").read_bytes()).hexdigest()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE collection_items("
+            "job_id TEXT PRIMARY KEY, library_path TEXT, media_sha256 TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO collection_items VALUES (?, ?, ?)",
+            (entry_ref, str(canonical), media_digest),
+        )
+    destination = tmp_path / "results"
+    configure_results_root(instance, destination)
+
+    inspection = inspect_legacy_results(instance)
+    first = migrate_legacy_results(instance)
+    post_migration_inspection = inspect_legacy_results(instance)
+    second = migrate_legacy_results(instance)
+
+    assert inspection["migration_ready"] is True
+    assert inspection["discovered"] == 2
+    assert inspection["duplicates_skipped"] == 1
+    assert first["discovered"] == 2
+    assert first["selected"] == 1
+    assert first["duplicates_skipped"] == 1
+    assert first["copied"] == 1
+    assert post_migration_inspection["migration_ready"] is True
+    assert post_migration_inspection["duplicates_skipped"] == 1
+    assert second["reused"] == 1
+    assert second["duplicates_skipped"] == 1
+    assert (destination / "AI 工具" / "权威成果").is_dir()
+    assert not (destination / "AI 工具" / "旧副本").exists()
+    assert stale.is_dir()
+
+
+def test_media_duplicates_without_authoritative_source_are_blocked(tmp_path: Path) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    entry_ref = "aweme-0123456789abcdefabcd"
+    first = _legacy_entry(instance, entry_ref=entry_ref, title="副本一")
+    second = _legacy_entry(instance, entry_ref=entry_ref, title="副本二")
+    (first / "资料信息.yml").unlink()
+    (second / "资料信息.yml").unlink()
+    _registry_by_media(instance, entry_ref, first)
+    configure_results_root(instance, tmp_path / "results")
+
+    inspection = inspect_legacy_results(instance)
+
+    assert inspection["migration_ready"] is False
+    assert inspection["blocked"] == 2
+    assert inspection["issues"]["duplicate_reference_conflict"] == 2
+    with pytest.raises(ResultsMigrationError) as error:
+        migrate_legacy_results(instance)
+    assert error.value.code == "results_migration_duplicate_reference"
+
+
+def test_legacy_checkpoint_without_source_digest_remains_supported(
+    tmp_path: Path,
+) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    _legacy_entry(instance)
+    destination = tmp_path / "results"
+    configure_results_root(instance, destination)
+    migrate_legacy_results(instance)
+    state_path = instance / "data" / "migrations" / "results-v1.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["entries"][0].pop("source_sha256")
+    state["entries"][0].pop("entry_ref")
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    result = migrate_legacy_results(instance)
+
+    assert result["reused"] == 1
 
 
 def test_migration_rejects_duplicate_entry_references(tmp_path: Path) -> None:
@@ -375,3 +647,22 @@ def test_migrate_results_cli_requires_confirmation_and_returns_safe_counts(
     assert payload["data"]["copied"] == 1
     assert str(instance) not in json.dumps(payload, ensure_ascii=False)
     assert str(tmp_path / "results") not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_migrate_inspect_cli_is_read_only_and_safe(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    title = "私有标题"
+    incomplete = instance / "library" / "分类" / title
+    incomplete.mkdir(parents=True)
+
+    assert main(["--root", str(instance), "migrate", "inspect", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["operation"] == "migrate_inspect"
+    assert payload["data"]["incomplete"] == 1
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert title not in serialized
+    assert str(instance) not in serialized

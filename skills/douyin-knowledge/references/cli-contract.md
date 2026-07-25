@@ -30,6 +30,7 @@ instance without putting either absolute path in conversational output.
 <invoke> doctor --json
 <invoke> status --json
 <invoke> configure results --path <absolute-folder> --confirm --json
+<invoke> migrate inspect --json
 <invoke> migrate results --confirm --json
 <invoke> plan --limit 1 --json
 <invoke> login --confirm --json
@@ -81,6 +82,21 @@ same-entry target produces a controlled conflict instead of being overwritten. T
 command returns only counts, booleans, and a relative state handle. Migration does
 not change collection or publication status and is not a general relocation command
 for an already journaled `results/` archive.
+
+If migration reports an incomplete legacy entry, run `migrate inspect` before any
+retry. It is read-only and returns only complete/incomplete counts plus issue-type
+counts; it never returns titles, paths, entry references, or media content. A
+`repairable` entry has every content artifact, lacks the manifest introduced by
+newer releases, and maps uniquely to a legacy database record by its registered path
+or source-video SHA-256. A duplicate fingerprint is never guessed. A repairable
+entry is migration-ready: the manifest is generated only in the verified destination
+copy. A `blocked` entry is not migration-ready.
+
+When multiple legacy directories resolve to one stable entry, the uniquely
+registered legacy path is authoritative and media-fingerprint-only duplicates remain
+preserved under the legacy root; report them as `duplicates_skipped`. If there is no
+single authoritative source, inspection reports a blocking duplicate-reference
+conflict and migration must stop.
 
 `run` stops at `download`, `analysis`, `packet`, or `staging`. It never invokes an AI
 model and never publishes. `canary` is fixed at one item and stops at `packet`.
