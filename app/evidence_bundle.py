@@ -185,12 +185,14 @@ def _write_chunks(
 ) -> tuple[Path, ...]:
     chunks: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
+    maximum_chunk_count = max(1, len(records))
     for record in records:
         candidate = current + [record]
         probe = {
             "schema_version": EVIDENCE_BUNDLE_SCHEMA_VERSION,
             "job_ref": job_ref,
             "chunk_index": len(chunks) + 1,
+            "chunk_count": maximum_chunk_count,
             "records": candidate,
         }
         if current and len(_encoded(probe)) > max_chunk_bytes:

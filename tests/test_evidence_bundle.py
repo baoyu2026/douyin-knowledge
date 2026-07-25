@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.evidence_bundle import build_evidence_bundle
+from app.evidence_bundle import _encoded, _write_chunks, build_evidence_bundle
 from tests.test_structured_content import _fixture
 
 
@@ -97,3 +97,28 @@ def test_evidence_bundle_reports_private_fragments_without_leaking_them(tmp_path
     combined = "\n".join(path.read_text(encoding="utf-8") for path in result.chunk_paths)
     assert "Authorization secret" not in combined
     assert result.payload["omitted_private_or_empty_fragments"] >= 1
+
+
+def test_chunk_budget_includes_final_chunk_count_metadata(tmp_path: Path) -> None:
+    job_ref = "aweme-0123456789abcdefabcd"
+    max_bytes = 4096
+    first = {"source": "asr", "text": "a" * 1000}
+    second = None
+    for length in range(1, max_bytes):
+        candidate = {"source": "asr", "text": "b" * length}
+        probe = {
+            "schema_version": 1,
+            "job_ref": job_ref,
+            "chunk_index": 1,
+            "records": [first, candidate],
+        }
+        final = {**probe, "chunk_count": 1}
+        if len(_encoded(probe)) <= max_bytes < len(_encoded(final)):
+            second = candidate
+            break
+
+    assert second is not None
+    paths = _write_chunks(tmp_path, job_ref, [first, second], max_bytes)
+
+    assert len(paths) == 2
+    assert all(path.stat().st_size <= max_bytes for path in paths)
