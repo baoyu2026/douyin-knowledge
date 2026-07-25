@@ -116,10 +116,18 @@ def export_packet(root: Path, job_ref: str) -> dict[str, Any]:
     schema_path = task / "candidate.schema.json"
     instructions_path = task / "worker-instructions.md"
     manifest_path = task / "protocol-manifest.json"
+    previous_manifest: dict[str, Any] = {}
+    if manifest_path.is_file():
+        try:
+            loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                previous_manifest = loaded
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            pass
     try:
         packet = build_content_packet(root, job_ref, packet_path)
         _inputs, frames, _duration = _analysis_inputs(root, job_ref)
-        evidence = build_evidence_bundle(root, job_ref, task, frames)
+        evidence = build_evidence_bundle(root, job_ref, task)
         catalog = _library_catalog(root)
         content_schema, _effective_path = _effective_schema(root, job_ref, catalog, frames)
     except (ContentPacketError, EvidenceBundleError, StructuredContentError) as exc:
@@ -140,11 +148,19 @@ def export_packet(root: Path, job_ref: str) -> dict[str, Any]:
         "and the exact evidence chunk and visual files listed by that manifest.\n"
         "Read every evidence chunk before writing the candidate; chunks contain the complete "
         "sanitized ASR/OCR/timeline evidence and must not be silently skipped.\n"
-        "Inspect the listed visual files before writing visual_evidence. If this host cannot "
+        "Inspect every listed visual file before writing visual_evidence; the manifest contains "
+        "the complete analyzed keyframe inventory, while the candidate must select only 3 to 8 "
+        "visual_evidence conclusions. If this host cannot "
         "read images, stop and report the capability gap instead of fabricating visual claims.\n"
         "Write one pure JSON object to candidate-v1.json.tmp, close it, then rename it "
         "to candidate-v1.json.\n"
         f"Set job_ref to {job_ref} and packet_sha256 to {packet.sha256}.\n"
+        "Use 2 to 8 unique, specific tags and never use placeholder tags. Register every "
+        "number used anywhere in publishable content in numeric_review; if there are no "
+        "numbers, use one not_applicable row. Keep unresolved verdicts, pending_review, and "
+        "review_status mutually consistent.\n"
+        "Exclude privacy-triggering content including URLs, cookies, signatures, request "
+        "metadata, raw platform IDs, JobId values, and absolute or internal paths.\n"
         "Do not output Markdown fences, commentary, paths, URLs, credentials, or raw IDs.\n"
         "Do not publish, mutate SQLite, or claim completion; candidate import is authoritative.\n"
     )
@@ -157,8 +173,36 @@ def export_packet(root: Path, job_ref: str) -> dict[str, Any]:
         "evidence_manifest_sha256": _sha256(evidence.manifest_path),
         "evidence_chunks": evidence.payload["chunks"],
         "visuals": evidence.payload["visuals"],
+        "complete_visual_inventory": evidence.payload["complete_visual_inventory"],
+        "required_visual_inspection_count": evidence.payload[
+            "required_visual_inspection_count"
+        ],
+        "candidate_visual_evidence_limits": evidence.payload[
+            "candidate_visual_evidence_limits"
+        ],
         "candidate_handle": candidate_handle,
     }
+    previous_import_hash = previous_manifest.get("imported_candidate_sha256")
+    if (
+        previous_manifest.get("packet_sha256") == packet.sha256
+        and isinstance(previous_import_hash, str)
+    ):
+        manifest["imported_candidate_sha256"] = previous_import_hash
+    elif isinstance(previous_import_hash, str):
+        manifest["superseded_candidate_sha256"] = previous_import_hash
+    existing_candidate = task / "candidate-v1.json"
+    if existing_candidate.is_file():
+        try:
+            existing_payload = json.loads(existing_candidate.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            existing_payload = None
+        if (
+            isinstance(existing_payload, dict)
+            and existing_payload.get("packet_sha256") != packet.sha256
+        ):
+            archived_hash = _quarantine(root, job_ref, existing_candidate)
+            if archived_hash is not None:
+                manifest["superseded_candidate_sha256"] = archived_hash
     _atomic_json(manifest_path, manifest)
     return {
         "job_ref": job_ref,
@@ -239,7 +283,36 @@ def repair_contract(root: Path, job_ref: str) -> dict[str, Any]:
             "select a job reference returned by plan or status",
         )
     task = root / "data" / "tasks" / job_ref / "semantic-v1"
-    rejection = _load_object(task / "last-rejection.json", "candidate_rejection_missing")
+    rejection_path = task / "last-rejection.json"
+    if not rejection_path.is_file():
+        candidate_path = task / "candidate-v1.json"
+        raw_path = root / "orchestration" / "structured-content" / job_ref / "response-v1.json"
+        if candidate_path.is_file():
+            candidate = _load_object(candidate_path, "candidate_json_invalid")
+            raw = (
+                _load_object(raw_path, "candidate_json_invalid")
+                if raw_path.is_file()
+                else candidate.get("content")
+            )
+            if isinstance(raw, dict) and candidate.get("content") == raw:
+                diagnostic_raw = task / f".repair-diagnostic-{uuid.uuid4().hex}.json"
+                diagnostic_draft = (
+                    root
+                    / "orchestration"
+                    / "content-drafts"
+                    / f".{job_ref}-repair-diagnostic-{uuid.uuid4().hex}.md"
+                )
+                try:
+                    _atomic_json(diagnostic_raw, raw)
+                    render_structured_json_artifact(
+                        root, job_ref, diagnostic_raw, diagnostic_draft
+                    )
+                except StructuredContentError as exc:
+                    _record_rejection(root, job_ref, candidate_path, code=exc.code)
+                finally:
+                    diagnostic_raw.unlink(missing_ok=True)
+                    diagnostic_draft.unlink(missing_ok=True)
+    rejection = _load_object(rejection_path, "candidate_rejection_missing")
     code = str(rejection.get("error_code") or "candidate_rejection_missing")
     repairable = code not in NON_REPAIRABLE_ERRORS
     contract = {
@@ -338,9 +411,40 @@ def import_candidate(root: Path, job_ref: str, supplied: Path) -> dict[str, Any]
     already_staged = raw_path.is_file() and draft_path.is_file()
     replaced = False
     candidate_hash = _sha256(candidate_path)
+    tracked_hash = manifest.get("imported_candidate_sha256") or manifest.get(
+        "superseded_candidate_sha256"
+    )
+    tracked_replacement = isinstance(tracked_hash, str) and tracked_hash != candidate_hash
+    if tracked_replacement:
+        history = root / "quarantine" / "candidates" / job_ref / f"{tracked_hash}.json"
+        if not history.is_file():
+            raise CliError(
+                "candidate_history_unavailable",
+                "the previous candidate could not be preserved for audit",
+                "correct private storage access before importing the replacement",
+            )
+        previous_candidate = _load_object(history, "candidate_json_invalid")
+        tracked_stale = previous_candidate.get("packet_sha256") != manifest.get(
+            "packet_sha256"
+        )
+        decision = latest_candidate_decision(
+            root / "data" / "knowledge.db",
+            job_ref=job_ref,
+            candidate_sha256=tracked_hash,
+        )
+        if not tracked_stale and decision != "reject":
+            if accepted_path.resolve() == candidate_path.resolve():
+                _atomic_bytes(accepted_path, history.read_bytes())
+            raise CliError(
+                "candidate_already_imported",
+                "a different candidate has already been imported",
+                "reject the current candidate before importing one replacement",
+            )
+        replaced = True
     latest_review = latest_job_review(root / "data" / "knowledge.db", job_ref=job_ref)
     official_replacement = bool(
-        accepted_path.resolve() == candidate_path.resolve()
+        not tracked_replacement
+        and accepted_path.resolve() == candidate_path.resolve()
         and latest_review is not None
         and latest_review[0] != candidate_hash
     )
@@ -360,12 +464,13 @@ def import_candidate(root: Path, job_ref: str, supplied: Path) -> dict[str, Any]
         accepted = _load_object(accepted_path, "candidate_json_invalid")
         if accepted != candidate:
             accepted_hash = _sha256(accepted_path)
+            accepted_stale = accepted.get("packet_sha256") != manifest.get("packet_sha256")
             decision = latest_candidate_decision(
                 root / "data" / "knowledge.db",
                 job_ref=job_ref,
                 candidate_sha256=accepted_hash,
             )
-            if decision != "reject":
+            if not accepted_stale and decision != "reject":
                 raise CliError(
                     "candidate_already_imported",
                     "a different candidate has already been imported",
@@ -386,15 +491,25 @@ def import_candidate(root: Path, job_ref: str, supplied: Path) -> dict[str, Any]
         _atomic_json(accepted_path, candidate)
         reused = False
     candidate_hash = _sha256(accepted_path)
+    if _quarantine(root, job_ref, accepted_path) != candidate_hash:
+        raise CliError(
+            "candidate_history_unavailable",
+            "the imported candidate could not be preserved for audit",
+            "correct private storage access before staging the candidate",
+        )
     _atomic_json(raw_path, content)
     try:
         render_structured_json_artifact(root, job_ref, raw_path, draft_path)
     except StructuredContentError as exc:
+        _record_rejection(root, job_ref, accepted_path, code=exc.code)
         raise CliError(
             exc.code,
             "candidate rendering or staging validation failed",
             "correct only the rejected fields and import one replacement candidate",
         ) from exc
+    manifest["imported_candidate_sha256"] = candidate_hash
+    manifest.pop("superseded_candidate_sha256", None)
+    _atomic_json(task / "protocol-manifest.json", manifest)
     return {
         "job_ref": job_ref,
         "status": "staged",

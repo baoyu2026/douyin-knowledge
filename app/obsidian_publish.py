@@ -32,6 +32,7 @@ MANAGED_PROPERTIES = {
     "duration_sec",
     "quality",
     "review_status",
+    "evidence_status",
     "favorite_state",
     "processed_at",
     "content_version",
@@ -39,6 +40,10 @@ MANAGED_PROPERTIES = {
     "related_notes",
     "tags",
 }
+MANAGED_FRAME_NAME = re.compile(
+    r"^frame-\d{3}(?:-\d{9}ms)?\.(?:jpe?g|png)$",
+    re.IGNORECASE,
+)
 
 
 def ensure_obsidian_schema(connection: sqlite3.Connection) -> None:
@@ -307,6 +312,14 @@ def publish_to_obsidian(
         raise PublicationError("obsidian_collision", "笔记路径被其他对象占用")
 
     attachment_dir.mkdir(parents=True, exist_ok=True)
+    selected_frame_names = {frame.name for frame in frames}
+    for existing_frame in attachment_dir.iterdir():
+        if (
+            existing_frame.is_file()
+            and MANAGED_FRAME_NAME.fullmatch(existing_frame.name)
+            and existing_frame.name not in selected_frame_names
+        ):
+            existing_frame.unlink()
     for frame in frames:
         _atomic_copy(frame, attachment_dir / frame.name)
     _atomic_copy(timeline, attachment_dir / "完整时间轴.md")
@@ -338,10 +351,13 @@ def publish_to_obsidian(
         "author": str(job.get("author") or "未知"),
         "duration_sec": int(round(float(duration))) if isinstance(duration, (int, float)) else 0,
         "quality": "high" if metadata.get("质量模式") == "高质量" else "low-review",
-        "review_status": "已复核" if metadata.get("复核状态") == "已复核" else "待复核",
+        "review_status": "unreviewed",
+        "evidence_status": (
+            "verified" if metadata.get("证据核验状态") == "verified" else "needs_review"
+        ),
         "favorite_state": "active" if item["currently_collected"] else "uncollected",
         "processed_at": processed_at,
-        "content_version": 1,
+        "content_version": 2,
         "cover": f"[[{frame_links[0]}]]",
         "related_notes": related_notes,
         "tags": ["来源/抖音收藏", f"领域/{category}"]

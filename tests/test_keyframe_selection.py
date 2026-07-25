@@ -33,6 +33,11 @@ def test_keyframe_selection_is_deterministic_scene_aware_and_covers_tail(tmp_pat
     assert any(item["timestamp"] == 50 for item, _path in first)
     assert len(first) == 8
 
+    complete = resolve_keyframes(analysis, manifest, max_count=None, min_count=3)
+    assert [path.name for _item, path in complete] == [
+        f"frame-{index:03d}.jpg" for index in range(20)
+    ]
+
 
 def test_keyframe_selection_rejects_paths_outside_keyframe_directory(tmp_path: Path) -> None:
     analysis = tmp_path / "analysis"

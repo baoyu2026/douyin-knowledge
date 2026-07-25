@@ -150,7 +150,41 @@ def _is_registered_library_target(root: Path, job_id: str, target: Path) -> bool
     return registered.resolve() == target.resolve()
 
 
-def _select_keyframes(analysis_dir: Path, manifest: dict[str, Any]) -> list[Path]:
+def _select_keyframes(
+    analysis_dir: Path,
+    manifest: dict[str, Any],
+    draft: ValidatedDraft | None = None,
+) -> list[Path]:
+    if draft is not None:
+        raw_evidence = draft.metadata.get("visual_evidence")
+        if not isinstance(raw_evidence, list) or not 3 <= len(raw_evidence) <= 8:
+            raise PublicationError(
+                "invalid_keyframe_selection",
+                "高质量发布必须引用 3 至 8 张有效关键帧",
+            )
+        try:
+            available = {
+                path.name: path
+                for _item, path in resolve_keyframes(
+                    analysis_dir, manifest, max_count=None, min_count=3
+                )
+            }
+        except ValueError as exc:
+            raise PublicationError(
+                "insufficient_keyframes", "发布至少需要 3 张有效关键帧"
+            ) from exc
+        selected: list[Path] = []
+        observed: set[str] = set()
+        for item in raw_evidence:
+            name = item.get("frame") if isinstance(item, dict) else None
+            if not isinstance(name, str) or name in observed or name not in available:
+                raise PublicationError(
+                    "invalid_keyframe_selection",
+                    "高质量内容稿引用了无效或重复的关键帧",
+                )
+            observed.add(name)
+            selected.append(available[name])
+        return selected
     try:
         selected = resolve_keyframes(analysis_dir, manifest, max_count=8, min_count=3)
     except ValueError as exc:
@@ -183,6 +217,7 @@ def _render_content(
     tags: list[str],
     added_at: str,
     review_status: str,
+    evidence_status: str,
 ) -> str:
     segments = _transcript_evidence(transcript)
     texts = [_single_line(segment.get("text")) for segment in segments]
@@ -203,6 +238,7 @@ def _render_content(
         "标签": tags,
         "新增时间": added_at,
         "复核状态": review_status,
+        "证据核验状态": evidence_status,
         "质量模式": "低质量待复核",
     }
     header = yaml.safe_dump(
@@ -288,6 +324,7 @@ def _render_validated_draft(
     tags: list[str],
     added_at: str,
     review_status: str,
+    evidence_status: str,
 ) -> str:
     metadata = {
         "标题": title,
@@ -295,6 +332,7 @@ def _render_validated_draft(
         "标签": tags,
         "新增时间": added_at,
         "复核状态": review_status,
+        "证据核验状态": evidence_status,
         "质量模式": "高质量",
     }
     header = yaml.safe_dump(
@@ -349,7 +387,12 @@ def _verify_obsidian_publication(root: Path, vault: Path, job_id: str) -> None:
     frames = [
         path
         for path in attachments.glob("*")
-        if path.suffix.lower() in {".jpg", ".jpeg", ".png"}
+        if path.is_file()
+        and re.fullmatch(
+            r"frame-\d{3}(?:-\d{9}ms)?\.(?:jpe?g|png)",
+            path.name,
+            re.IGNORECASE,
+        )
     ]
     complete = (
         note.is_file()
@@ -392,6 +435,7 @@ def publish_job(
         raise PublicationError("content_draft_required", "高质量发布缺少内容稿")
 
     draft: ValidatedDraft | None = None
+    evidence_status = "needs_review"
     if content_draft is not None:
         try:
             draft = validate_content_draft(root, job_id, content_draft)
@@ -401,7 +445,7 @@ def publish_job(
         category = draft.category
         title = draft.title
         tags = draft.tags
-        review_status = draft.review_status
+        evidence_status = draft.evidence_status
         quality_mode = "high-quality"
 
     from app.obsidian_publish import configured_vault, publish_to_obsidian
@@ -434,7 +478,7 @@ def publish_job(
         if not same_media and not _is_registered_library_target(root, job_id, target):
             raise PublicationError("library_collision", "同名知识条目属于不同视频")
     added_at = _single_line(existing.get("新增时间")) or datetime.now(UTC).isoformat()
-    selected_frames = _select_keyframes(analysis_dir, manifest)
+    selected_frames = _select_keyframes(analysis_dir, manifest, draft)
     if draft is not None:
         content = _render_validated_draft(
             draft,
@@ -443,6 +487,7 @@ def publish_job(
             tags=normalized_tags,
             added_at=added_at,
             review_status=review_status,
+            evidence_status=evidence_status,
         )
     else:
         content = _render_content(
@@ -454,12 +499,23 @@ def publish_job(
             tags=normalized_tags,
             added_at=added_at,
             review_status=review_status,
+            evidence_status=evidence_status,
         )
 
     target.mkdir(parents=True, exist_ok=True)
     _atomic_copy(source_video, target / "原视频.mp4")
+    selected_frame_names = {frame.name for frame in selected_frames}
+    frame_target = target / "精选关键帧"
+    if frame_target.is_dir():
+        for existing_frame in frame_target.iterdir():
+            if (
+                existing_frame.is_file()
+                and existing_frame.suffix.lower() in {".jpg", ".jpeg", ".png"}
+                and existing_frame.name not in selected_frame_names
+            ):
+                existing_frame.unlink()
     for frame in selected_frames:
-        _atomic_copy(frame, target / "精选关键帧" / frame.name)
+        _atomic_copy(frame, frame_target / frame.name)
     _atomic_copy(timeline, target / "附件" / "完整时间轴.md")
     atomic_write_text(document_path, content)
     generate_indexes(library_root)

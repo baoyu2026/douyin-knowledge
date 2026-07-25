@@ -143,6 +143,9 @@ def _manifest_facts(manifest: dict[str, Any]) -> dict[str, Any]:
             "asr_source_duration_ratio",
             "asr_duration_status",
             "asr_quality_status",
+            "ocr_quality_status",
+            "ocr_line_count",
+            "ocr_frames_with_text",
         )
         if key in coverage
     }
@@ -162,7 +165,7 @@ def _manifest_facts(manifest: dict[str, Any]) -> dict[str, Any]:
 
 def _selected_keyframes(analysis: Path, manifest: dict[str, Any]) -> list[dict[str, Any]]:
     try:
-        selected = resolve_keyframes(analysis, manifest, max_count=8)
+        selected = resolve_keyframes(analysis, manifest, max_count=None)
     except ValueError as exc:
         raise ContentPacketError(str(exc)) from exc
     return [

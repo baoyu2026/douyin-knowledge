@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from app.analyze_video import ANALYSIS_VERSION
 from app.collection_registry import PIPELINE_VERSION, CollectionRegistry
 from app.structured_content import (
     StructuredContentError,
@@ -58,7 +59,7 @@ def _fixture(root: Path) -> str:
     (analysis / "manifest.json").write_text(
         json.dumps(
             {
-                "analysis_version": 2,
+                "analysis_version": ANALYSIS_VERSION,
                 "source": {
                     "duration_seconds": 15.0,
                     "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),

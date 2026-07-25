@@ -87,6 +87,24 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         "VALUES (1, ?)",
         (_now(),),
     )
+    collection_table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'collection_items'"
+    ).fetchone()
+    if collection_table is not None:
+        connection.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS collection_completed_requires_acceptance
+            BEFORE UPDATE OF status ON collection_items
+            WHEN NEW.status = 'completed' AND OLD.status != 'completed'
+              AND NOT EXISTS (
+                  SELECT 1 FROM publication_sagas
+                  WHERE job_ref = NEW.job_id AND state = 'accepted'
+              )
+            BEGIN
+                SELECT RAISE(ABORT, 'completion_requires_accepted_publication');
+            END
+            """
+        )
 
 
 def _validate_sha256(value: str, *, field: str) -> str:
@@ -522,6 +540,11 @@ def accept_publication(
             "VALUES (?, ?, ?)",
             (saga_id, json.dumps(checks, sort_keys=True), timestamp),
         )
+        connection.execute(
+            "UPDATE publication_sagas SET state = 'accepted', updated_at = ? "
+            "WHERE saga_id = ?",
+            (timestamp, saga_id),
+        )
         updated = connection.execute(
             "UPDATE collection_items SET status = 'completed' WHERE job_id = ?",
             (str(saga["job_ref"]),),
@@ -530,11 +553,6 @@ def accept_publication(
             raise PublicationStateError(
                 "registry_item_missing", "the publication job is missing from the registry"
             )
-        connection.execute(
-            "UPDATE publication_sagas SET state = 'accepted', updated_at = ? "
-            "WHERE saga_id = ?",
-            (timestamp, saga_id),
-        )
         current = connection.execute(
             "SELECT * FROM publication_sagas WHERE saga_id = ?", (saga_id,)
         ).fetchone()

@@ -10,6 +10,7 @@ from app.collection_registry import (
     update_item_by_job,
 )
 from app.managed_batch import BatchConfig, OwnerLease, run_managed_batch, sanitize
+from tests.publication_helpers import accept_item_for_test
 
 
 def _fixture(tmp_path: Path) -> BatchConfig:
@@ -37,7 +38,8 @@ def _fixture(tmp_path: Path) -> BatchConfig:
         library_dir.mkdir(parents=True)
         media = job_dir / "source.mp4"
         media.write_bytes(f"fixture-{index}".encode())
-        registry.mark_completed(
+        accept_item_for_test(
+            registry,
             source_id,
             pipeline_version=PIPELINE_VERSION,
             media_sha256=hashlib.sha256(media.read_bytes()).hexdigest(),
@@ -84,7 +86,8 @@ def test_driver_stops_after_exactly_three_new_completions(tmp_path: Path, monkey
         registry = CollectionRegistry(
             config.root / "data" / "knowledge.db", root=config.root
         )
-        registry.mark_completed(
+        accept_item_for_test(
+            registry,
             item.source_id,
             pipeline_version=PIPELINE_VERSION,
             media_sha256=hashlib.sha256(media.read_bytes()).hexdigest(),
@@ -201,9 +204,11 @@ def test_downloaded_checkpoint_is_resumed_before_new_items(tmp_path: Path, monke
             current_media.write_bytes(f"completed-{item.last_position}".encode())
         library = config.root / "library" / item.job_id
         library.mkdir(parents=True)
-        CollectionRegistry(
+        registry = CollectionRegistry(
             config.root / "data" / "knowledge.db", root=config.root
-        ).mark_completed(
+        )
+        accept_item_for_test(
+            registry,
             item.source_id,
             pipeline_version=PIPELINE_VERSION,
             media_sha256=hashlib.sha256(current_media.read_bytes()).hexdigest(),

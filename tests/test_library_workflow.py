@@ -324,6 +324,9 @@ def test_obsidian_low_quality_publish_preserves_annotations_without_completion(
     document = note.read_text(encoding="utf-8")
     document = document.replace("这里的内容不会被自动更新覆盖。", "我的人工判断：保持不变。")
     note.write_text(document, encoding="utf-8")
+    attachment_dir = vault / "99-Attachments" / "抖音收藏" / "幂等发布：样板"
+    (attachment_dir / "frame-999.jpg").write_bytes(b"stale managed frame")
+    (attachment_dir / "my-note.jpg").write_bytes(b"unmanaged user attachment")
 
     publish_job(
         tmp_path,
@@ -340,8 +343,9 @@ def test_obsidian_low_quality_publish_preserves_annotations_without_completion(
     assert job_id not in repeated
     assert aweme_id not in repeated
     assert not list(vault.rglob("*.mp4"))
-    attachment_dir = vault / "99-Attachments" / "抖音收藏" / "幂等发布：样板"
-    assert len(list(attachment_dir.glob("*.jpg"))) == 8
+    assert len(list(attachment_dir.glob("frame-*.jpg"))) == 8
+    assert not (attachment_dir / "frame-999.jpg").exists()
+    assert (attachment_dir / "my-note.jpg").read_bytes() == b"unmanaged user attachment"
     assert (attachment_dir / "完整时间轴.md").is_file()
     assert (
         "[[99-Attachments/抖音收藏/幂等发布：样板/完整时间轴|完整时间轴]]"

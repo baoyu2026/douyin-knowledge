@@ -90,7 +90,7 @@ def test_review_record_and_list_never_return_private_notes(tmp_path: Path, capsy
 
     code, status = invoke(["--root", str(tmp_path), "status", "--json"], capsys)
     assert code == 0
-    assert status["data"]["pending_review"] == 0
+    assert "pending_review" not in status["data"]
 
     for decision in ("reject", "approve"):
         code, _recorded_again = invoke(
@@ -161,7 +161,59 @@ def test_status_counts_publication_journal_states(tmp_path: Path, capsys) -> Non
     }
 
 
-def test_confirmed_publish_requires_review_and_accepts_verified_targets(
+def test_status_counts_only_latest_publication_for_each_job(
+    tmp_path: Path, capsys
+) -> None:
+    database = _database(tmp_path)
+    old = begin_publication(
+        tmp_path,
+        database,
+        job_ref=JOB_REF,
+        idempotency_key="old",
+        draft_sha256="1" * 64,
+        media_sha256="2" * 64,
+        targets={"library": ("library/old.md", "3" * 64)},
+    )
+    current = begin_publication(
+        tmp_path,
+        database,
+        job_ref=JOB_REF,
+        idempotency_key="current",
+        draft_sha256="4" * 64,
+        media_sha256="5" * 64,
+        targets={"library": ("library/current.md", "6" * 64)},
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE publication_sagas SET created_at = ?, updated_at = ? "
+            "WHERE saga_id = ?",
+            ("2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00", old["saga_id"]),
+        )
+        connection.execute(
+            "UPDATE publication_sagas SET state = 'accepted', created_at = ?, updated_at = ? "
+            "WHERE saga_id = ?",
+            (
+                "2026-01-02T00:00:00+00:00",
+                "2026-01-02T00:00:00+00:00",
+                current["saga_id"],
+            ),
+        )
+
+    code, payload = invoke(["--root", str(tmp_path), "status", "--json"], capsys)
+
+    assert code == 0
+    assert payload["data"]["publication"] == {
+        "intent": 0,
+        "published_unaccepted": 0,
+        "accepted": 1,
+    }
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM publication_sagas WHERE job_ref = ?", (JOB_REF,)
+        ).fetchone()[0] == 2
+
+
+def test_confirmed_publish_accepts_staged_candidate_without_review(
     tmp_path: Path, capsys
 ) -> None:
     source_id = "private-publication-source"
@@ -204,22 +256,6 @@ def test_confirmed_publish_requires_review_and_accepts_verified_targets(
         "publishing:\n  enabled: false\n  require_confirmation: true\n", encoding="utf-8"
     )
 
-    code, _review = invoke(
-        [
-            "--root",
-            str(tmp_path),
-            "review",
-            "record",
-            "--job-ref",
-            job_ref,
-            "--decision",
-            "approve",
-            "--json",
-        ],
-        capsys,
-    )
-    assert code == 0
-
     publish_args = [
         "--root",
         str(tmp_path),
@@ -244,7 +280,37 @@ def test_confirmed_publish_requires_review_and_accepts_verified_targets(
     assert code == 0
     assert published["data"]["state"] == "accepted"
     assert published["data"]["targets"] == {"library": "verified", "vault": "verified"}
+    code, reviews = invoke(
+        ["--root", str(tmp_path), "review", "list", "--job-ref", job_ref, "--json"],
+        capsys,
+    )
+    assert code == 0
+    assert reviews["data"]["items"] == []
+    note = next((vault / "40-Resources" / "抖音收藏").rglob("*.md"))
+    document = note.read_text(encoding="utf-8")
+    assert "review_status: unreviewed" in document
+    assert "evidence_status: verified" in document
     with sqlite3.connect(tmp_path / "data" / "knowledge.db") as connection:
         assert connection.execute(
             "SELECT status FROM collection_items WHERE job_id = ?", (job_ref,)
         ).fetchone()[0] == "completed"
+
+    code, rejected = invoke(
+        [
+            "--root",
+            str(tmp_path),
+            "review",
+            "record",
+            "--job-ref",
+            job_ref,
+            "--decision",
+            "reject",
+            "--json",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert rejected["data"]["decision"] == "reject"
+    code, blocked = invoke(publish_args, capsys)
+    assert code == 2
+    assert blocked["error"]["code"] == "candidate_rejected"

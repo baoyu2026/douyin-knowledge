@@ -12,6 +12,7 @@ from typing import Any
 
 from app.analyze_video import JOB_ID_PATTERN
 from app.content_packet import _clean_record
+from app.keyframe_selection import resolve_keyframes
 
 EVIDENCE_BUNDLE_SCHEMA_VERSION = 1
 DEFAULT_CHUNK_BYTES = 32 * 1024
@@ -177,6 +178,13 @@ def _record_time(record: dict[str, Any]) -> tuple[float, int, int]:
     return timestamp, source_order.get(str(record.get("source")), 9), int(record.get("line") or 0)
 
 
+def _visual_timestamp(item: dict[str, Any], fallback: int) -> float:
+    try:
+        return round(float(item.get("timestamp")), 3)
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
 def _write_chunks(
     output_dir: Path,
     job_ref: str,
@@ -244,7 +252,6 @@ def build_evidence_bundle(
     root: Path,
     job_ref: str,
     output_dir: Path,
-    frames: list[Path],
     *,
     max_chunk_bytes: int = DEFAULT_CHUNK_BYTES,
 ) -> EvidenceBundleResult:
@@ -255,6 +262,14 @@ def build_evidence_bundle(
     if max_chunk_bytes < MIN_CHUNK_BYTES:
         raise EvidenceBundleError(f"max_chunk_bytes must be at least {MIN_CHUNK_BYTES}")
     analysis = root / "data" / "jobs" / job_ref / "analysis"
+    manifest = _object(analysis / "manifest.json", "analysis manifest")
+    try:
+        selected_visuals = resolve_keyframes(
+            analysis, manifest, max_count=None, min_count=3
+        )
+    except ValueError as exc:
+        raise EvidenceBundleError(str(exc)) from exc
+    frames = [path for _item, path in selected_visuals]
     transcript_json = analysis / "transcript.json"
     if transcript_json.is_file():
         transcript, transcript_omitted = _transcript_records(
@@ -285,6 +300,11 @@ def build_evidence_bundle(
         "schema_version": EVIDENCE_BUNDLE_SCHEMA_VERSION,
         "job_ref": job_ref,
         "complete_sanitized_evidence": True,
+        "complete_visual_inventory": True,
+        "visual_count": len(visual_paths),
+        "required_visual_inspection_count": len(visual_paths),
+        "visual_index_basis": "analysis_keyframe_order",
+        "candidate_visual_evidence_limits": {"min_items": 3, "max_items": 8},
         "record_count": len(records),
         "source_record_counts": source_counts,
         "omitted_private_or_empty_fragments": (
@@ -301,11 +321,14 @@ def build_evidence_bundle(
         "visuals": [
             {
                 "frame_index": index,
+                "timestamp_seconds": _visual_timestamp(item, index - 1),
                 "file": path.relative_to(output_dir).as_posix(),
                 "size_bytes": path.stat().st_size,
                 "sha256": _sha256(path),
             }
-            for index, path in enumerate(visual_paths, 1)
+            for index, ((item, _source), path) in enumerate(
+                zip(selected_visuals, visual_paths, strict=True), 1
+            )
         ],
     }
     manifest_path = output_dir / "evidence-manifest.json"

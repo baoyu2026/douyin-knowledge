@@ -25,6 +25,7 @@ from app.single_item_driver import (
     _run_with_heartbeat,
     run_single_item,
 )
+from tests.publication_helpers import accept_item_for_test
 
 
 def _fixture(tmp_path: Path, *, dry_run: bool = False) -> tuple[SingleItemConfig, str]:
@@ -78,6 +79,26 @@ def _mark(config: SingleItemConfig, stage: str) -> None:
     path.write_text("ok\n", encoding="utf-8")
 
 
+def _accept_fixture(config: SingleItemConfig, library: Path) -> dict[str, object]:
+    source = config.job_dir / "source.mp4"
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    registry = CollectionRegistry(config.root / "data" / "knowledge.db", root=config.root)
+    accept_item_for_test(
+        registry,
+        config.aweme_id,
+        pipeline_version=PIPELINE_VERSION,
+        media_sha256=digest,
+        job_path=config.job_dir,
+        library_path=library,
+    )
+    return {
+        "status": "passed",
+        "job_id": config.job_id,
+        "position": config.position,
+        "checks": {"fixture": True},
+    }
+
+
 def test_fixed_driver_resumes_checkpoint_and_never_selects_next(tmp_path: Path) -> None:
     config, next_job_id = _fixture(tmp_path)
     calls: list[str] = []
@@ -108,18 +129,13 @@ def test_fixed_driver_resumes_checkpoint_and_never_selects_next(tmp_path: Path) 
                 update_item_by_job(
                     config.root / "data" / "knowledge.db",
                     config.job_id,
-                    status="completed",
+                    status="analyzed",
                     library_path=library,
                     media_sha256=hashlib.sha256(b"fixture").hexdigest(),
                 )
             _mark(config, stage)
             if stage == "accept":
-                return {
-                    "status": "passed",
-                    "job_id": config.job_id,
-                    "position": config.position,
-                    "checks": {"fixture": True},
-                }
+                return _accept_fixture(config, config.root / "library" / "fixture")
             return None
 
         return run
@@ -203,18 +219,13 @@ def test_resume_after_schema_checkpoint_skips_download_analysis_and_generation(
                 update_item_by_job(
                     current.root / "data" / "knowledge.db",
                     current.job_id,
-                    status="completed",
+                    status="analyzed",
                     library_path=library,
                     media_sha256=hashlib.sha256(b"fixture").hexdigest(),
                 )
             _mark(current, stage)
             if stage == "accept":
-                return {
-                    "status": "passed",
-                    "job_id": current.job_id,
-                    "position": current.position,
-                    "checks": {"fixture": True},
-                }
+                return _accept_fixture(current, current.root / "library" / "fixture")
             return None
 
         return run
@@ -341,16 +352,21 @@ def test_prepublish_backup_is_reused_after_publish_interruption(tmp_path: Path) 
     )
 
 
-def test_completed_publish_checkpoint_can_resume_acceptance(tmp_path: Path) -> None:
+def test_published_checkpoint_can_resume_acceptance(tmp_path: Path) -> None:
     config, next_job_id = _fixture(tmp_path)
     library = config.root / "library" / "fixture"
     library.mkdir(parents=True)
     (library / "内容整理.md").write_text("fixture\n", encoding="utf-8")
+    config.job_dir.mkdir(parents=True)
+    source_video = config.job_dir / "source.mp4"
+    source_video.write_bytes(b"fixture")
     update_item_by_job(
         config.root / "data" / "knowledge.db",
         config.job_id,
-        status="completed",
+        status="analyzed",
+        job_path=config.job_dir,
         library_path=library,
+        media_sha256=hashlib.sha256(source_video.read_bytes()).hexdigest(),
     )
     backup = config.task_dir / "artifacts" / "single-item-prepublish-knowledge.db"
     backup.parent.mkdir(parents=True)
@@ -410,12 +426,7 @@ def test_completed_publish_checkpoint_can_resume_acceptance(tmp_path: Path) -> N
     }
     validators["accept"] = lambda current: current.acceptance_path.is_file()
     operations = {
-        "accept": lambda current, _lease, _checkpoint: {
-            "status": "passed",
-            "job_id": current.job_id,
-            "position": current.position,
-            "checks": {"fixture": True},
-        }
+        "accept": lambda current, _lease, _checkpoint: _accept_fixture(current, library)
     }
     assert run_single_item(config, operations=operations, validators=validators) == SUCCESS
     with sqlite3.connect(config.root / "data" / "knowledge.db") as connection:

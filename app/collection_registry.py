@@ -507,6 +507,20 @@ class CollectionRegistry:
     ) -> None:
         source_id = canonical_source_id(source)
         with _connect(self.db_path) as connection:
+            publication_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'publication_sagas'"
+            ).fetchone()
+            accepted = None
+            if publication_table is not None:
+                accepted = connection.execute(
+                    "SELECT 1 FROM publication_sagas AS publication "
+                    "JOIN collection_items AS item ON item.job_id = publication.job_ref "
+                    "WHERE item.source_id = ? AND publication.state = 'accepted' LIMIT 1",
+                    (source_id,),
+                ).fetchone()
+            if accepted is None:
+                raise CollectionRegistryError("completion_requires_accepted_publication")
             changed = connection.execute(
                 """
                 UPDATE collection_items
@@ -730,11 +744,12 @@ def update_item_by_job(
         "processing",
         "downloaded",
         "analyzed",
-        "completed",
         "failed",
         "incomplete",
     }
     if status not in allowed_statuses:
+        if status == "completed":
+            raise CollectionRegistryError("completion_requires_accepted_publication")
         raise ValueError("invalid_collection_status")
     with _connect(db_path) as connection:
         row = connection.execute(
@@ -754,9 +769,6 @@ def update_item_by_job(
         if library_path is not None:
             updates.append("library_path = ?")
             values.append(str(library_path))
-        if status == "completed":
-            updates.append("pipeline_version = COALESCE(pipeline_version, ?)")
-            values.append(PIPELINE_VERSION)
         values.append(job_id)
         connection.execute(
             f"UPDATE collection_items SET {', '.join(updates)} WHERE job_id = ?",

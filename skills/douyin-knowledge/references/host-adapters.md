@@ -21,12 +21,14 @@ A full host must be able to:
 1. Execute this Skill's `scripts/invoke.ps1` and capture one complete stdout JSON object.
 2. Read the evidence manifest and every returned evidence chunk in order without
    truncating or silently skipping the complete sanitized evidence.
-3. Open every returned visual handle with an image-capable tool and inspect the image
-   pixels before producing `visual_evidence`.
+3. Verify the complete visual inventory count, then open every returned visual handle
+   with an image-capable tool and inspect the image pixels before selecting 3 to 8
+   `visual_evidence` conclusions.
 4. Read no unlisted private artifact and perform no network enrichment.
 5. Write one pure UTF-8 JSON candidate atomically at the returned output handle.
 6. Run candidate import and rely on its result rather than conversational output.
-7. Stop for explicit confirmations and a separate human review decision.
+7. Stop for explicit operation confirmations and require accepted publication before
+   reporting completion; do not invent a pre-publication review gate.
 8. Keep runtime bindings, credentials, raw evidence, and private paths out of model context.
 
 ## Codex

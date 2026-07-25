@@ -38,6 +38,7 @@ instance without putting either absolute path in conversational output.
 <invoke> packet export --job-ref <ref> --json
 <invoke> candidate import --job-ref <ref> --input <file> --json
 <invoke> candidate repair-contract --job-ref <ref> --json
+# Optional post-publication audit/correction records:
 <invoke> review list --job-ref <ref> --json
 <invoke> review record --job-ref <ref> --decision <approve|reject> --json
 <invoke> publish --job-ref <ref> --confirm --json
@@ -46,6 +47,24 @@ instance without putting either absolute path in conversational output.
 
 `run` stops at `download`, `analysis`, `packet`, or `staging`. It never invokes an AI
 model and never publishes. `canary` is fixed at one item and stops at `packet`.
+
+The CLI permits local analysis to run for up to two hours. The host invocation must
+also allow at least two hours, or use a session that can yield and later resume. A
+host timeout does not prove that the child process stopped. Run `status` first: if
+the same `active_job_ref` is present, poll no more often than every 30 to 60 seconds
+and never launch a duplicate analysis. Do not delete a run lock manually. If it is
+still active after the two-hour analysis window, invoke `run` only for that same
+`job_ref` and the same previously confirmed stop point; the CLI will reject an active
+lease or quarantine a stale one, then reuse its checkpoint and completed stages. If
+the original stop point or start time is unknown, do not infer a later scope or call
+the lease stale; keep monitoring or ask before a newly confirmed retry. Use
+`reconcile` after an interrupted publication, not after an analysis-only timeout.
+
+`packet export` returns every keyframe already selected by local analysis in
+`visual_handles` (currently at most 40). The evidence manifest reports the complete
+visual count and requires the worker to inspect every handle. This full input does not
+change the candidate or publication limit: `visual_evidence` selects 3 to 8 conclusions,
+and only those referenced frames are copied to Library and Obsidian.
 
 ## Confirmation Message
 
@@ -58,6 +77,8 @@ Before a gated command, state:
 5. The stop point and deterministic checks.
 
 Obtain a new confirmation for publication even if analysis was already confirmed.
-An operation confirmation is not a content review decision. Never run `review record`
-until the user has inspected the current draft and explicitly said `approve` or
-`reject` for it.
+The same rule applies after a correction request: correction intent permits candidate
+revision but does not authorize another Library or Obsidian write.
+No `approve` record is required before publication. Use `review record` only when the
+user explicitly gives that decision for the current published candidate; it is an
+optional audit/correction record and never completion evidence.

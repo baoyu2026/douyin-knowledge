@@ -52,6 +52,15 @@ try {
     $Repeated = & $Installer -Destination $SkillDestination -InstanceRoot $InstanceRoot `
         -CliPath $EnvironmentCli | ConvertFrom-Json
     if (-not $Repeated.reused) { throw "Identical Skill reinstall was not idempotent." }
+    $Forced = & $Installer -Destination $SkillDestination -CliPath $EnvironmentCli -Force |
+        ConvertFrom-Json
+    if (-not $Forced.installed -or $Forced.reused) {
+        throw "Forced Skill upgrade did not replace the bundle."
+    }
+    $Runtime = Get-Content -Raw -Encoding UTF8 -LiteralPath $RuntimePath | ConvertFrom-Json
+    if ([string]$Runtime.instance_root -ne [System.IO.Path]::GetFullPath($InstanceRoot)) {
+        throw "Forced Skill upgrade did not preserve the existing instance binding."
+    }
     $Status = & (Join-Path $SkillDestination "scripts\invoke.ps1") status --json |
         ConvertFrom-Json
     if (-not $Status.ok -or $Status.operation -ne "status") {

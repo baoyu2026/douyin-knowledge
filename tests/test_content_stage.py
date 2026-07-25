@@ -19,7 +19,7 @@ from app.probe_one import stable_job_id
 from app.publish_library import publish_job
 
 
-def _make_analyzed_job(root: Path) -> str:
+def _make_analyzed_job(root: Path, *, frame_count: int = 3) -> str:
     source_id = "private-content-stage"
     snapshot = begin_snapshot(root / "data" / "knowledge.db")
     ingest_snapshot_page(
@@ -51,7 +51,7 @@ def _make_analyzed_job(root: Path) -> str:
         encoding="utf-8",
     )
     items = []
-    for index in range(3):
+    for index in range(frame_count):
         name = f"frame-{index + 1:03d}.jpg"
         (keyframes / name).write_bytes(f"frame-{index}".encode())
         items.append({"file": f"keyframes/{name}", "timestamp": index})
@@ -129,6 +129,10 @@ related_knowledge:
 visual_evidence:
   - frame: frame-001.jpg
     claim: 画面中文证据与口述一致
+  - frame: frame-002.jpg
+    claim: The second inspected frame supplies distinct visual evidence for publication.
+  - frame: frame-003.jpg
+    claim: The third inspected frame supplies distinct visual evidence for publication.
 pending_review: []
 ---
 
@@ -143,6 +147,27 @@ def _write_draft(root: Path, text: str | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text or _draft_text(), encoding="utf-8")
     return path
+
+
+def test_low_quality_ocr_cannot_be_marked_verified(tmp_path: Path) -> None:
+    job_id = _make_analyzed_job(tmp_path)
+    manifest_path = tmp_path / "data" / "jobs" / job_id / "analysis" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["coverage_report"] = {"ocr_quality_status": "needs_review"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    draft = _write_draft(tmp_path)
+
+    with pytest.raises(ContentStageError) as error:
+        validate_content_draft(tmp_path, job_id, draft)
+    assert error.value.code == "content_review_status_invalid"
+
+    draft.write_text(
+        draft.read_text(encoding="utf-8").replace(
+            "review_status: verified", "review_status: needs_review"
+        ),
+        encoding="utf-8",
+    )
+    assert validate_content_draft(tmp_path, job_id, draft).evidence_status == "needs_review"
 
 
 def test_runner_prompt_contains_complete_utf8_inputs_and_images(tmp_path: Path) -> None:
@@ -451,8 +476,11 @@ def test_private_candidate_is_quarantined_but_never_accepted(
 
 
 def test_valid_fixture_draft_publishes_without_preemptive_completion(tmp_path: Path) -> None:
-    job_id = _make_analyzed_job(tmp_path)
-    draft = _write_draft(tmp_path)
+    job_id = _make_analyzed_job(tmp_path, frame_count=12)
+    draft = _write_draft(
+        tmp_path,
+        _draft_text().replace("frame: frame-003.jpg", "frame: frame-012.jpg"),
+    )
     vault = tmp_path / "vault"
     (vault / ".obsidian").mkdir(parents=True)
     target = publish_job(
@@ -469,6 +497,11 @@ def test_valid_fixture_draft_publishes_without_preemptive_completion(tmp_path: P
     assert "主分类: 软件工程" in document
     assert "高质量内容门禁样板" in document
     assert "会被内容稿覆盖" not in document
+    assert {path.name for path in (target / "精选关键帧").iterdir()} == {
+        "frame-001.jpg",
+        "frame-002.jpg",
+        "frame-012.jpg",
+    }
     note = vault / "40-Resources" / "抖音收藏" / "软件工程" / "高质量内容门禁样板.md"
     assert note.is_file()
     with sqlite3.connect(tmp_path / "data" / "knowledge.db") as connection:

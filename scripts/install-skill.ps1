@@ -36,6 +36,30 @@ if (-not $CliPath -or -not (Test-Path -LiteralPath $CliPath -PathType Leaf)) {
 }
 $CliPath = [System.IO.Path]::GetFullPath($CliPath)
 
+if (-not $Destination) {
+    $Destination = Join-Path $HOME ".codex\skills\douyin-knowledge"
+}
+$Destination = [System.IO.Path]::GetFullPath($Destination)
+if ($Destination -eq [System.IO.Path]::GetFullPath($Source)) {
+    throw "Skill destination must differ from the bundled source directory."
+}
+
+if (-not $InstanceRoot) {
+    $ExistingRuntimePath = Join-Path $Destination "runtime.local.json"
+    if (Test-Path -LiteralPath $ExistingRuntimePath -PathType Leaf) {
+        try {
+            $ExistingRuntime = Get-Content -Raw -Encoding UTF8 -LiteralPath $ExistingRuntimePath |
+                ConvertFrom-Json
+            if ($ExistingRuntime.schema_version -ne 1 -or -not $ExistingRuntime.instance_root) {
+                throw "unsupported binding"
+            }
+            $InstanceRoot = [string]$ExistingRuntime.instance_root
+        }
+        catch {
+            throw "The existing Skill runtime binding is invalid; pass -InstanceRoot explicitly."
+        }
+    }
+}
 if (-not $InstanceRoot) {
     $Binding = Join-Path $Repository ".venv\instance-root.txt"
     if (Test-Path -LiteralPath $Binding -PathType Leaf) {
@@ -48,14 +72,6 @@ if (-not $InstanceRoot) {
     $InstanceRoot = Join-Path $env:LOCALAPPDATA "douyin-knowledge"
 }
 $InstanceRoot = [System.IO.Path]::GetFullPath($InstanceRoot)
-
-if (-not $Destination) {
-    $Destination = Join-Path $HOME ".codex\skills\douyin-knowledge"
-}
-$Destination = [System.IO.Path]::GetFullPath($Destination)
-if ($Destination -eq [System.IO.Path]::GetFullPath($Source)) {
-    throw "Skill destination must differ from the bundled source directory."
-}
 
 function Test-SameSkillBundle {
     param([string]$Left, [string]$Right)

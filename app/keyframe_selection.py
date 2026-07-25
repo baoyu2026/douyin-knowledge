@@ -26,10 +26,10 @@ def resolve_keyframes(
     analysis_dir: Path,
     manifest: dict[str, Any],
     *,
-    max_count: int = 8,
+    max_count: int | None = 8,
     min_count: int = 1,
 ) -> list[tuple[dict[str, Any], Path]]:
-    if max_count < 1 or min_count < 1 or min_count > max_count:
+    if min_count < 1 or (max_count is not None and (max_count < 1 or min_count > max_count)):
         raise ValueError("invalid keyframe selection limits")
     raw_items = (manifest.get("keyframes") or {}).get("items") or []
     if not isinstance(raw_items, list):
@@ -49,6 +49,8 @@ def resolve_keyframes(
     valid.sort(key=lambda value: (_timestamp(value[0], value[2]), value[1].name))
     if len(valid) < min_count:
         raise ValueError("analysis manifest has insufficient usable keyframes")
+    if max_count is None:
+        return [(item, path) for item, path, _index in valid]
     if len(valid) <= max_count:
         return [(item, path) for item, path, _index in valid]
     if max_count == 1:

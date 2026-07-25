@@ -111,6 +111,25 @@ def test_content_packet_is_deterministic_bounded_and_hashed(tmp_path: Path) -> N
     )
 
 
+def test_content_packet_inventories_every_analyzed_keyframe(tmp_path: Path) -> None:
+    analysis = _fixture(tmp_path)
+    manifest_path = analysis / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    items = manifest["keyframes"]["items"]
+    for index in range(4, 41):
+        name = f"frame-{index:03d}.jpg"
+        (analysis / "keyframes" / name).write_bytes(f"frame-{index}".encode())
+        items.append(
+            {"id": index, "timestamp": float(index - 1), "file": f"keyframes/{name}"}
+        )
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    result = build_content_packet(tmp_path, JOB_ID, tmp_path / "packet.json")
+
+    assert len(result.payload["selected_keyframes"]) == 40
+    assert result.payload["selected_keyframes"][-1]["file"] == "frame-040.jpg"
+
+
 def test_content_packet_excludes_private_and_unrelated_fields(tmp_path: Path) -> None:
     _fixture(tmp_path)
     result = build_content_packet(tmp_path, JOB_ID, tmp_path / "packet.json", max_bytes=8192)

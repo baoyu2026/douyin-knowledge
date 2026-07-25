@@ -24,11 +24,10 @@ CONTROLLED_FAILURE_EXIT = 4
 INTERNAL_FAILURE_EXIT = 5
 PROBE_DIR = Path("data/probe-collect")
 OUTPUT_DIR = Path("data/analysis/collect-probe-sample")
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 JOBS_DIR = Path("data/jobs")
 JOB_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 REQUIRED_ANALYSIS_ARTIFACTS = {
-    "audio.wav",
     "transcript.json",
     "transcript.md",
     "ocr.json",
@@ -59,7 +58,7 @@ class AnalysisConfig:
     asr_model: str = "small"
     device: str = "cpu"
     compute_type: str = "int8"
-    sample_interval_seconds: float = 0.5
+    sample_interval_seconds: float = 0.2
     coverage_interval_seconds: float = 15.0
     scene_threshold: float = 0.12
     duplicate_hamming_ratio: float = 0.08
@@ -222,7 +221,10 @@ def load_current_manifest(video: Path, output: Path) -> dict[str, Any] | None:
         source = manifest.get("source", {})
         if source.get("sha256") != sha256_file(video):
             return None
-        if not all((output / name).is_file() for name in REQUIRED_ANALYSIS_ARTIFACTS):
+        required = set(REQUIRED_ANALYSIS_ARTIFACTS)
+        if (manifest.get("asr") or {}).get("audio_present") is not False:
+            required.add("audio.wav")
+        if not all((output / name).is_file() for name in required):
             return None
         if not (output / "keyframes").is_dir():
             return None
@@ -330,7 +332,7 @@ def inspect_video(video: Path, deps: RuntimeDependencies) -> dict[str, float | i
     }
 
 
-def extract_audio(ffmpeg: str, video: Path, output: Path) -> None:
+def extract_audio(ffmpeg: str, video: Path, output: Path) -> bool:
     command = [
         ffmpeg,
         "-nostdin",
@@ -353,9 +355,14 @@ def extract_audio(ffmpeg: str, video: Path, output: Path) -> None:
         result = subprocess.run(command, capture_output=True, check=False, timeout=600)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise AnalysisError("audio_extraction_failed", f"音频提取失败：{exc}") from exc
+    stderr = result.stderr.decode("utf-8", errors="replace").strip()[-1000:]
+    no_audio_stream = "matches no streams" in stderr or "does not contain any stream" in stderr
+    if no_audio_stream:
+        output.unlink(missing_ok=True)
+        return False
     if result.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
-        stderr = result.stderr.decode("utf-8", errors="replace").strip()[-1000:]
         raise AnalysisError("audio_extraction_failed", f"FFmpeg 音频提取失败：{stderr}")
+    return True
 
 
 def _word_payload(word: Any) -> dict[str, object]:
@@ -922,15 +929,22 @@ def run_analysis(
         log.emit("inspect", "ok", **metadata)
 
         log.emit("audio", "started")
-        extract_audio(ffmpeg, video, stage_dir / "audio.wav")
-        log.emit("audio", "ok")
+        audio_present = extract_audio(ffmpeg, video, stage_dir / "audio.wav") is not False
+        log.emit("audio", "ok" if audio_present else "not_present")
 
         log.emit("asr", "started", model=config.asr_model, local_files_only=True)
         if config.transcript_override is not None:
             transcript = load_transcript_override(config.transcript_override)
             log.emit("asr", "reused_precomputed", segments=len(transcript["segments"]))
-        else:
+        elif audio_present:
             transcript = transcribe_audio(stage_dir / "audio.wav", config, deps)
+        else:
+            transcript = {
+                "language": "not_applicable",
+                "language_probability": None,
+                "duration_seconds": float(metadata["duration_seconds"]),
+                "segments": [],
+            }
         try:
             asr_reported_duration = float(transcript["duration_seconds"])
         except (KeyError, TypeError, ValueError) as exc:
@@ -954,14 +968,16 @@ def run_analysis(
             for segment in transcript["segments"]
             if segment.get("confidence") is not None and float(segment["confidence"]) < 0.5
         )
-        asr_quality_status = (
-            "needs_review"
-            if detected_language not in {"zh", "yue"}
-            or language_probability is None
-            or language_probability < 0.7
-            or low_confidence_segment_count > 0
-            else "verified"
-        )
+        asr_quality_status = "not_applicable"
+        if audio_present or config.transcript_override is not None:
+            asr_quality_status = (
+                "needs_review"
+                if detected_language not in {"zh", "yue"}
+                or language_probability is None
+                or language_probability < 0.7
+                or low_confidence_segment_count > 0
+                else "verified"
+            )
         atomic_write_json(stage_dir / "transcript.json", transcript)
         atomic_write_text(stage_dir / "transcript.md", render_transcript_markdown(transcript))
         log.emit("asr", "ok", segments=len(transcript["segments"]))
@@ -975,14 +991,16 @@ def run_analysis(
                 "source_duration_seconds": round(source_duration, 3),
                 "asr_reported_duration_seconds": round(asr_reported_duration, 3),
                 "asr_source_duration_ratio": round(asr_duration_ratio, 6),
-                "asr_duration_status": "verified",
+                "asr_duration_status": "verified" if audio_present else "not_applicable",
                 "detected_language": detected_language,
                 "language_probability": language_probability,
                 "low_confidence_segment_count": low_confidence_segment_count,
                 "asr_quality_status": asr_quality_status,
             }
         )
-        if not coverage_report["scan_reached_end"]:
+        if not coverage_report["scan_reached_end"] or not coverage_report[
+            "tail_frame_readable"
+        ]:
             raise AnalysisError(
                 "video_tail_unreadable",
                 "视频尾部未能成功解码，拒绝生成不完整分析",
@@ -993,7 +1011,34 @@ def run_analysis(
         ocr = run_ocr(stage_dir, keyframes, deps)
         atomic_write_json(stage_dir / "ocr.json", ocr)
         atomic_write_text(stage_dir / "ocr.md", render_ocr_markdown(ocr))
-        log.emit("ocr", "ok", frames=len(ocr["frames"]))
+        ocr_line_count = sum(len(frame["lines"]) for frame in ocr["frames"])
+        ocr_frames_with_text = sum(1 for frame in ocr["frames"] if frame["lines"])
+        low_confidence_ocr_lines = sum(
+            1
+            for frame in ocr["frames"]
+            for line in frame["lines"]
+            if float(line["confidence"]) < 0.5
+        )
+        ocr_quality_status = (
+            "needs_review"
+            if ocr_line_count == 0 or low_confidence_ocr_lines * 4 > ocr_line_count
+            else "verified"
+        )
+        coverage_report.update(
+            {
+                "ocr_quality_status": ocr_quality_status,
+                "ocr_line_count": ocr_line_count,
+                "ocr_frames_with_text": ocr_frames_with_text,
+                "ocr_low_confidence_line_count": low_confidence_ocr_lines,
+            }
+        )
+        log.emit(
+            "ocr",
+            "ok",
+            frames=len(ocr["frames"]),
+            lines=ocr_line_count,
+            quality_status=ocr_quality_status,
+        )
 
         atomic_write_text(stage_dir / "timeline.md", render_timeline(transcript, ocr))
         atomic_write_text(stage_dir / "summary.md", render_deterministic_summary(transcript, ocr))
@@ -1010,7 +1055,8 @@ def run_analysis(
             "local_only": True,
             "summary_mode": "deterministic",
             "asr": {
-                "engine": "faster-whisper",
+                "engine": "faster-whisper" if audio_present else "none",
+                "audio_present": audio_present,
                 "model": config.asr_model,
                 "device": config.device,
                 "compute_type": config.compute_type,
@@ -1026,7 +1072,10 @@ def run_analysis(
             "ocr": {
                 "engine": "RapidOCR",
                 "frame_count": len(ocr["frames"]),
-                "line_count": sum(len(frame["lines"]) for frame in ocr["frames"]),
+                "line_count": ocr_line_count,
+                "frames_with_text": ocr_frames_with_text,
+                "low_confidence_line_count": low_confidence_ocr_lines,
+                "quality_status": ocr_quality_status,
             },
             "keyframes": {
                 "count": len(keyframes),

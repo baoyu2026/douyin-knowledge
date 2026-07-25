@@ -84,6 +84,20 @@ def test_hamming_ratio_exposes_deterministic_keyframe_dedup_distance() -> None:
     assert hamming_ratio(b"\x00", b"\x01") == 0.125
 
 
+def test_extract_audio_reports_video_without_audio_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = SimpleNamespace(
+        returncode=1,
+        stderr=b"Stream map '0:a:0' matches no streams.",
+    )
+    monkeypatch.setattr(analyze_video.subprocess, "run", lambda *_args, **_kwargs: result)
+    output = tmp_path / "audio.wav"
+
+    assert analyze_video.extract_audio("ffmpeg", tmp_path / "silent.mp4", output) is False
+    assert not output.exists()
+
+
 def test_keyframe_selection_scans_tail_before_applying_global_limit(tmp_path: Path) -> None:
     class FakeCapture:
         def __init__(self) -> None:
@@ -149,7 +163,7 @@ def test_keyframe_selection_scans_tail_before_applying_global_limit(tmp_path: Pa
     assert len(frames) == 4
     assert frames[0]["timestamp"] == 0.0
     assert frames[-1]["timestamp"] == 10.0
-    assert coverage["sample_interval_seconds"] == 0.5
+    assert coverage["sample_interval_seconds"] == 0.2
     assert coverage["scanned_until_seconds"] == 10.0
     assert coverage["scan_reached_end"] is True
     assert coverage["tail_frame_readable"] is True
@@ -389,6 +403,95 @@ def test_run_analysis_rejects_obviously_incomplete_asr_duration(
 
     assert error.value.code == "asr_duration_mismatch"
     assert not output.exists()
+
+
+def test_run_analysis_rejects_unreadable_exact_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_mock_pipeline(monkeypatch)
+    original = analyze_video.extract_keyframes
+
+    def unreadable_tail(*args, **kwargs):
+        frames, coverage = original(*args, **kwargs)
+        coverage["tail_frame_readable"] = False
+        return frames, coverage
+
+    monkeypatch.setattr(analyze_video, "extract_keyframes", unreadable_tail)
+    video = tmp_path / "sample.mp4"
+    video.write_bytes(b"fixture mp4")
+
+    with pytest.raises(AnalysisError) as error:
+        run_analysis(
+            video,
+            tmp_path / "analysis" / "sample",
+            "mock-ffmpeg",
+            RuntimeDependencies(None, None, None, None),
+            AnalysisConfig(asr_model="fixture-model"),
+            DiagnosticLog(tmp_path / "logs" / "analysis.jsonl"),
+        )
+
+    assert error.value.code == "video_tail_unreadable"
+
+
+def test_run_analysis_continues_visual_pipeline_without_audio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_mock_pipeline(monkeypatch)
+    monkeypatch.setattr(analyze_video, "extract_audio", lambda *_args: False)
+
+    def unexpected_asr(*_args):
+        raise AssertionError("ASR must not run when the video has no audio stream")
+
+    monkeypatch.setattr(analyze_video, "transcribe_audio", unexpected_asr)
+    video = tmp_path / "sample.mp4"
+    video.write_bytes(b"fixture mp4")
+    output = tmp_path / "analysis" / "sample"
+
+    manifest = run_analysis(
+        video,
+        output,
+        "mock-ffmpeg",
+        RuntimeDependencies(None, None, None, None),
+        AnalysisConfig(asr_model="fixture-model"),
+        DiagnosticLog(tmp_path / "logs" / "analysis.jsonl"),
+    )
+
+    transcript = json.loads((output / "transcript.json").read_text(encoding="utf-8"))
+    assert transcript["segments"] == []
+    assert not (output / "audio.wav").exists()
+    assert manifest["asr"]["audio_present"] is False
+    assert manifest["asr"]["quality_status"] == "not_applicable"
+    assert manifest["coverage_report"]["asr_duration_status"] == "not_applicable"
+    assert analyze_video.load_current_manifest(video, output) is not None
+
+
+def test_run_analysis_marks_empty_ocr_as_needing_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_mock_pipeline(monkeypatch)
+    monkeypatch.setattr(
+        analyze_video,
+        "run_ocr",
+        lambda *_args: {
+            "schema_version": 1,
+            "engine": "RapidOCR",
+            "frames": [{"id": 1, "timestamp": 10.0, "file": "one.jpg", "lines": []}],
+        },
+    )
+    video = tmp_path / "sample.mp4"
+    video.write_bytes(b"fixture mp4")
+
+    manifest = run_analysis(
+        video,
+        tmp_path / "analysis" / "sample",
+        "mock-ffmpeg",
+        RuntimeDependencies(None, None, None, None),
+        AnalysisConfig(asr_model="fixture-model"),
+        DiagnosticLog(tmp_path / "logs" / "analysis.jsonl"),
+    )
+
+    assert manifest["ocr"]["quality_status"] == "needs_review"
+    assert manifest["coverage_report"]["ocr_line_count"] == 0
 
 
 def test_run_analysis_failure_keeps_previous_output_and_diagnostic_log(

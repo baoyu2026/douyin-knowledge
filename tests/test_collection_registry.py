@@ -16,7 +16,9 @@ from app.collection_registry import (
     ingest_snapshot_page,
     stable_collection_job_id,
     synchronize_collection,
+    update_item_by_job,
 )
+from tests.publication_helpers import accept_item_for_test
 
 PIPELINE_V1 = "test-v1"
 PIPELINE_V2 = "test-v2"
@@ -69,7 +71,8 @@ def complete_with_artifacts(
     library_path.mkdir(parents=True, exist_ok=True)
     (job_path / "source.mp4").write_bytes(body)
     digest = hashlib.sha256(body).hexdigest()
-    registry.mark_completed(
+    accept_item_for_test(
+        registry,
         source_id,
         pipeline_version=pipeline_version,
         media_sha256=digest,
@@ -77,6 +80,35 @@ def complete_with_artifacts(
         library_path=library_path,
     )
     return job_path, library_path, digest
+
+
+def test_completed_status_requires_accepted_publication(tmp_path: Path) -> None:
+    registry = make_registry(tmp_path)
+    synchronize_collection(
+        registry,
+        fetch_pages(page(["accepted", "blocked"])),
+        pipeline_version=PIPELINE_V1,
+    )
+    blocked = registry.get("blocked")
+    assert blocked is not None
+    with pytest.raises(CollectionRegistryError, match="completion_requires"):
+        registry.mark_completed(
+            "blocked",
+            pipeline_version=PIPELINE_V1,
+            media_sha256="0" * 64,
+            job_path=tmp_path / "missing-job",
+            library_path=tmp_path / "missing-library",
+        )
+    with pytest.raises(CollectionRegistryError, match="completion_requires"):
+        update_item_by_job(registry.db_path, blocked.job_id, status="completed")
+
+    complete_with_artifacts(registry, tmp_path, "accepted")
+    with sqlite3.connect(registry.db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="completion_requires"):
+            connection.execute(
+                "UPDATE collection_items SET status = 'completed' WHERE source_id = ?",
+                ("blocked",),
+            )
 
 
 def test_snapshot_page_chain_rejects_nonzero_start_discontinuity_and_truncation(

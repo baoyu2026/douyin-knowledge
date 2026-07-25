@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.resources
 import importlib.util
 import json
@@ -24,7 +23,7 @@ from douyin_knowledge.platform_ops import login as platform_login
 from douyin_knowledge.platform_ops import sync as platform_sync
 from douyin_knowledge.protocol import export_packet, import_candidate, repair_contract
 from douyin_knowledge.publication import PublicationStateError, reconcile_publications
-from douyin_knowledge.publishing import publish_reviewed_job
+from douyin_knowledge.publishing import publish_staged_job
 from douyin_knowledge.review import list_reviews, record_review
 
 INSTANCE_DIRS = (
@@ -233,30 +232,18 @@ def _status(root: Path) -> dict[str, Any]:
                 publication.update(
                     dict(
                         connection.execute(
-                            "SELECT state, COUNT(*) FROM publication_sagas GROUP BY state"
+                            "SELECT current.state, COUNT(*) "
+                            "FROM publication_sagas AS current "
+                            "WHERE NOT EXISTS ("
+                            "SELECT 1 FROM publication_sagas AS newer "
+                            "WHERE newer.job_ref = current.job_ref AND ("
+                            "newer.created_at > current.created_at OR ("
+                            "newer.created_at = current.created_at "
+                            "AND newer.saga_id > current.saga_id))) "
+                            "GROUP BY current.state"
                         ).fetchall()
                     )
                 )
-    pending_review = 0
-    candidates = sorted((root / "data" / "tasks").glob("*/semantic-v1/candidate-v1.json"))
-    if candidates:
-        latest: dict[tuple[str, str], str] = {}
-        if database.is_file():
-            with sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True) as connection:
-                if _table_exists(connection, "review_records"):
-                    rows = connection.execute(
-                        "SELECT job_ref, candidate_sha256, decision FROM review_records "
-                        "ORDER BY review_id"
-                    ).fetchall()
-                    latest = {
-                        (str(job_ref), str(candidate_sha256)): str(decision)
-                        for job_ref, candidate_sha256, decision in rows
-                    }
-        for candidate in candidates:
-            job_ref = candidate.parents[1].name
-            digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
-            if latest.get((job_ref, digest)) != "approve":
-                pending_review += 1
     active_stage = None
     active_job_ref = None
     active_runs: list[dict[str, str]] = []
@@ -281,7 +268,6 @@ def _status(root: Path) -> dict[str, Any]:
         "active_stage": active_stage,
         "active_job_ref": active_job_ref,
         "active_runs": active_runs,
-        "pending_review": pending_review,
         "publication": publication,
     }
     return success("status", data, summary=f"{data['total']} collection items")
@@ -676,7 +662,7 @@ def main(argv: list[str] | None = None) -> int:
                     "publishing is disabled in the runtime configuration",
                     "set publishing.enabled to true after reviewing the configured targets",
                 )
-            data = publish_reviewed_job(
+            data = publish_staged_job(
                 root,
                 job_ref=str(args.job_ref),
                 idempotency_key=args.idempotency_key,

@@ -17,7 +17,7 @@ from douyin_knowledge.publication import (
     reconcile_publications,
     seal_publication_targets,
 )
-from douyin_knowledge.review import approved_candidate, require_current_candidate
+from douyin_knowledge.review import latest_candidate_decision, require_current_candidate
 
 PRIVATE_PATTERNS = (
     re.compile(r"(?i)\b(cookie|sessionid?|signature|request[_ -]?url)\b"),
@@ -42,7 +42,22 @@ def _private_text_ok(*paths: Path) -> bool:
     return not any(pattern.search(content) for pattern in PRIVATE_PATTERNS)
 
 
-def publish_reviewed_job(
+def _registered_vault_note(database: Path, job_ref: str) -> Path | None:
+    try:
+        with sqlite3.connect(database) as connection:
+            row = connection.execute(
+                "SELECT publication.note_path FROM obsidian_publications AS publication "
+                "JOIN collection_items AS item USING(source_id) WHERE item.job_id = ?",
+                (job_ref,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None or not isinstance(row[0], str) or not row[0].strip():
+        return None
+    return Path(row[0])
+
+
+def publish_staged_job(
     root: Path,
     *,
     job_ref: str,
@@ -50,12 +65,17 @@ def publish_reviewed_job(
 ) -> dict[str, Any]:
     root = root.resolve()
     database = root / "data" / "knowledge.db"
-    require_current_candidate(root, job_ref)
-    if not approved_candidate(root, database, job_ref):
+    _candidate_path, candidate_digest = require_current_candidate(root, job_ref)
+    if (
+        latest_candidate_decision(
+            database, job_ref=job_ref, candidate_sha256=candidate_digest
+        )
+        == "reject"
+    ):
         raise CliError(
-            "review_approval_required",
-            "the current candidate has not been approved",
-            "record an approve review for the staged candidate before publishing",
+            "candidate_rejected",
+            "the current candidate was rejected after publication",
+            "import a corrected candidate from the current packet before publishing again",
         )
     draft_path = root / "orchestration" / "content-drafts" / f"{job_ref}-content.md"
     try:
@@ -63,8 +83,8 @@ def publish_reviewed_job(
     except (ContentStageError, OSError) as exc:
         raise CliError(
             getattr(exc, "code", "content_draft_invalid"),
-            "the approved content draft is no longer valid",
-            "import and approve a valid candidate before publishing",
+            "the staged content draft is no longer valid",
+            "import a valid candidate from the current packet before publishing",
         ) from exc
     source = root / "data" / "jobs" / job_ref / "source.mp4"
     if not source.is_file():
@@ -87,7 +107,9 @@ def publish_reviewed_job(
     # publication has already normalized it with the Library slug rules.
     vault_category = _obsidian_component(category, field="category")
     vault_title = _obsidian_component(draft.title, field="title")
-    vault_relative = NOTE_ROOT / vault_category / f"{vault_title}.md"
+    vault_relative = _registered_vault_note(database, job_ref) or (
+        NOTE_ROOT / vault_category / f"{vault_title}.md"
+    )
     vault_handle = (Path("vault") / vault_relative).as_posix()
     draft_digest = _digest(draft_path)
     media_digest = sha256_file(source)

@@ -10,7 +10,9 @@ Use the relative handles returned by `packet export`:
   sanitized evidence bundle.
 - Every path in `evidence_chunk_handles`: complete sanitized ASR, OCR, timeline, and
   summary records split into bounded JSON chunks.
-- Every path in `visual_handles`: image evidence that must be inspected as images.
+- Every path in `visual_handles`: the complete ordered inventory of keyframes already
+  selected by local analysis (currently at most 40), all of which must be inspected
+  as images.
 - `worker-instructions.md`: job-specific immutable instructions.
 
 Read the manifest first, then read every evidence chunk in returned order. Check the
@@ -18,12 +20,17 @@ job reference, chunk indexes/count, and manifest inventory; do not silently skip
 chunk because the summary packet appears sufficient. The chunks, not the bounded
 summary packet alone, are the complete sanitized textual evidence.
 
-Open every visual handle with an image-capable tool and actually inspect its pixels
-before writing `visual_evidence`. Do not infer visual claims from OCR, filenames,
-timestamps, or text summaries. If the host cannot view images, stop before generating
-a candidate, omit no required field, and report `candidate-only` plus a visual
-capability gap to the orchestrator. It must not fabricate or generate
-`visual_evidence`.
+Verify `complete_visual_inventory=true` and that the visual count matches
+`required_visual_inspection_count`. Open every visual handle with an image-capable
+tool and actually inspect its pixels before writing `visual_evidence`. Do not infer
+visual claims from OCR, filenames, timestamps, or text summaries. If the host cannot
+view every image, stop before generating a candidate, omit no required field, and
+report `candidate-only` plus a visual capability gap to the orchestrator. It must not
+fabricate or generate `visual_evidence`.
+
+The visual inventory is complete input, not the publication selection. Use its stable
+`frame_index` mapping to choose 3 to 8 supported conclusions for the candidate's
+`visual_evidence`; Library and Obsidian publish only those referenced frames.
 
 Read no other job, database, Cookie, log, Library, or orchestration file. Do not use
 network retrieval to enrich the evidence.
@@ -41,6 +48,19 @@ Do not add Markdown fences, commentary, URLs, credentials, absolute paths, raw
 platform IDs, or unsupported facts. Preserve the packet hash and job reference
 exactly.
 
+Before writing the candidate:
+
+- Use 2 to 8 unique, specific tags. Do not use generic or placeholder tags.
+- Register every number that appears anywhere in publishable content in
+  `numeric_review`, with evidence and a verdict. When the content contains no
+  numbers, use exactly one `not_applicable` row rather than inventing a number.
+- Keep uncertainty consistent: every `unresolved` noun or number must have a
+  corresponding `pending_review` item, and any pending item requires
+  `review_status=needs_review`; otherwise use `review_status=verified`.
+- Exclude privacy-triggering values and fields, including URLs, cookies,
+  signatures, request metadata, raw platform IDs, JobId values, credentials, and
+  absolute or internal paths.
+
 ## Import and Repair
 
 Run `candidate import`. Treat its result as authoritative. When import rejects the
@@ -53,12 +73,16 @@ candidate, run `candidate repair-contract`.
 - Never alter provenance fields or perform a second repair attempt.
 - Stop after two failures for the same stage and preserve all checkpoints.
 
-## Human Review
+## Publication and Correction
 
-After a successful import, use its `draft_handle` as the review artifact. Give the
-user that relative handle and, only when requested, show a bounded excerpt from the
-generated draft. Do not show raw packet evidence or private source material.
+After successful import, treat the candidate as staged and ready for a separately
+confirmed publication. Do not pause for draft approval and do not count candidate
+import as completion. Publish to Library and Obsidian, reconcile the sealed targets,
+and require `accepted` before reporting the job complete.
 
-Stop and wait for an explicit `approve` or `reject` decision tied to the current
-candidate. General permission to continue, approval of a batch plan, or confirmation
-of analysis does not satisfy this gate.
+The published Obsidian note starts with `review_status: unreviewed`; its independent
+`evidence_status` reflects the candidate's evidence checks. If the user later reports
+a problem from Obsidian, treat that report as correction intent without asking for a
+separate approve/reject step. Use the current packet to produce one corrected candidate,
+preserve the old publication through backups/journal, republish the same job, and
+reconcile again. Never expose raw packet evidence or private source material.

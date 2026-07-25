@@ -62,12 +62,11 @@ def test_evidence_bundle_preserves_all_sanitized_records_and_visuals(tmp_path: P
         tmp_path,
         job_ref,
         tmp_path / "data" / "tasks" / job_ref / "semantic-v1",
-        frames[:8],
         max_chunk_bytes=4096,
     )
 
     assert len(result.chunk_paths) > 1
-    assert len(result.visual_paths) == min(8, len(frames))
+    assert len(result.visual_paths) == len(frames)
     records = []
     for path in result.chunk_paths:
         assert path.stat().st_size <= 4096
@@ -77,6 +76,12 @@ def test_evidence_bundle_preserves_all_sanitized_records_and_visuals(tmp_path: P
         assert f"segment-{index:03d}" in asr_text
     assert result.payload["record_count"] == len(records)
     assert result.payload["complete_sanitized_evidence"] is True
+    assert result.payload["complete_visual_inventory"] is True
+    assert result.payload["required_visual_inspection_count"] == len(frames)
+    assert result.payload["candidate_visual_evidence_limits"] == {
+        "min_items": 3,
+        "max_items": 8,
+    }
 
 
 def test_evidence_bundle_reports_private_fragments_without_leaking_them(tmp_path: Path) -> None:
@@ -89,10 +94,7 @@ def test_evidence_bundle_reports_private_fragments_without_leaking_them(tmp_path
         {"start": 20, "end": 21, "text": "Authorization secret", "confidence": 1.0}
     )
     transcript_path.write_text(json.dumps(transcript), encoding="utf-8")
-    manifest = json.loads((analysis / "manifest.json").read_text(encoding="utf-8"))
-    frames = [analysis / item["file"] for item in manifest["keyframes"]["items"]]
-
-    result = build_evidence_bundle(tmp_path, job_ref, tmp_path / "task", frames[:3])
+    result = build_evidence_bundle(tmp_path, job_ref, tmp_path / "task")
 
     combined = "\n".join(path.read_text(encoding="utf-8") for path in result.chunk_paths)
     assert "Authorization secret" not in combined

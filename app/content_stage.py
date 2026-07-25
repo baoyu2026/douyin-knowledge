@@ -113,6 +113,10 @@ class ValidatedDraft:
     def review_status(self) -> str:
         return "已复核" if self.metadata["review_status"] == "verified" else "待人工复核"
 
+    @property
+    def evidence_status(self) -> str:
+        return str(self.metadata["review_status"])
+
 
 def _front_matter(document: str) -> tuple[dict[str, Any], str]:
     normalized = document.lstrip("\ufeff")
@@ -234,6 +238,16 @@ def _validate_numbers(body: str, rows: list[dict[str, Any]]) -> None:
         raise ContentStageError("content_numbers_unreviewed", "内容稿存在未登记复核的数字")
 
 
+def _analysis_coverage(root: Path, job_id: str) -> dict[str, Any]:
+    path = root / "data" / "jobs" / job_id / "analysis" / "manifest.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    coverage = manifest.get("coverage_report") if isinstance(manifest, dict) else None
+    return coverage if isinstance(coverage, dict) else {}
+
+
 def validate_content_draft(root: Path, job_id: str, path: Path) -> ValidatedDraft:
     root = root.resolve()
     if not JOB_ID_PATTERN.fullmatch(job_id):
@@ -280,6 +294,15 @@ def validate_content_draft(root: Path, job_id: str, path: Path) -> ValidatedDraf
         raise ContentStageError("content_review_status_invalid", "未决事实必须标记待复核")
     if pending and metadata["review_status"] != "needs_review":
         raise ContentStageError("content_review_status_invalid", "待复核项与复核状态不一致")
+    coverage = _analysis_coverage(root, job_id)
+    if (
+        coverage.get("ocr_quality_status") == "needs_review"
+        and metadata["review_status"] != "needs_review"
+    ):
+        raise ContentStageError(
+            "content_review_status_invalid",
+            "OCR 质量不足时内容稿必须标记 needs_review",
+        )
     for heading in REQUIRED_SECTIONS:
         if len(_section(body, heading)) < 8:
             raise ContentStageError("content_sections_incomplete", f"内容稿章节不完整：{heading}")

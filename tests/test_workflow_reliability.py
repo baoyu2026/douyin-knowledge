@@ -9,7 +9,7 @@ import pytest
 from douyin_knowledge.contracts import CliError
 from douyin_knowledge.operations import _analyze, run_job
 from douyin_knowledge.protocol import export_packet, import_candidate
-from douyin_knowledge.publishing import publish_reviewed_job
+from douyin_knowledge.publishing import _registered_vault_note, publish_staged_job
 from douyin_knowledge.review import approved_candidate, record_review
 from tests.test_public_cli import invoke
 from tests.test_structured_content import _fixture, _payload
@@ -71,6 +71,31 @@ def _doctor_prerequisites(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
             "broad_acl_identities": [],
         },
     )
+
+
+def test_publication_reuses_registered_vault_note_path(tmp_path: Path) -> None:
+    database = tmp_path / "data" / "knowledge.db"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE collection_items(source_id TEXT PRIMARY KEY, job_id TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE obsidian_publications("
+            "source_id TEXT PRIMARY KEY, note_path TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO collection_items VALUES ('private-source', 'safe-job-ref')"
+        )
+        connection.execute(
+            "INSERT INTO obsidian_publications VALUES "
+            "('private-source', '40-Resources/existing-note.md')"
+        )
+
+    assert _registered_vault_note(database, "safe-job-ref") == Path(
+        "40-Resources/existing-note.md"
+    )
+    assert _registered_vault_note(database, "unpublished-job") is None
 
 
 def test_doctor_accepts_installed_browser_path_and_validates_cookie(
@@ -176,7 +201,7 @@ def test_packet_refresh_makes_candidate_review_stale_for_staging_and_publish(
         run_job(tmp_path, job_ref=job_ref, stop_after="staging")
     assert staging.value.code == "candidate_stale"
     with pytest.raises(CliError) as publishing:
-        publish_reviewed_job(tmp_path, job_ref=job_ref)
+        publish_staged_job(tmp_path, job_ref=job_ref)
     assert publishing.value.code == "candidate_stale"
 
 

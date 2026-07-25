@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -6,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.collection_registry import PIPELINE_VERSION, CollectionRegistry, update_item_by_job
+from app.collection_registry import PIPELINE_VERSION, CollectionRegistry
 from app.probe_one import (
     COLLECT_VIDEO_SOURCE,
     CONTROLLED_FAILURE_EXIT,
@@ -26,6 +27,7 @@ from app.probe_one import (
     main as probe_main,
 )
 from app.security import GateError
+from tests.publication_helpers import accept_item_for_test
 
 
 class FakeAPI:
@@ -253,7 +255,19 @@ def test_fixed_job_stops_on_identity_conflict_or_other_owner_completion(tmp_path
     assert conflict.reason == "fixed_item_identity_conflict"
 
     (job_dir / "job.json").unlink()
-    update_item_by_job(db_path, expected_job_id, status="completed")
+    source = job_dir / "source.mp4"
+    source.write_bytes(b"accepted fixture")
+    library = tmp_path / "library" / expected_job_id
+    library.mkdir(parents=True)
+    registry = CollectionRegistry(db_path, root=tmp_path)
+    accept_item_for_test(
+        registry,
+        target["aweme_id"],
+        pipeline_version=PIPELINE_VERSION,
+        media_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        job_path=job_dir,
+        library_path=library,
+    )
     completed = select_snapshot_item(**kwargs)
     assert completed.item is None
     assert completed.reason == "fixed_item_already_completed"
