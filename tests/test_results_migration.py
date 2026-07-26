@@ -8,10 +8,12 @@ from pathlib import Path
 import pytest
 import yaml
 
+import douyin_knowledge.results_migration as results_migration
 from douyin_knowledge.cli import main
 from douyin_knowledge.result_archive import ResultsConfigError, configure_results_root
 from douyin_knowledge.results_migration import (
     ResultsMigrationError,
+    cleanup_legacy_results,
     inspect_legacy_results,
     migrate_legacy_results,
 )
@@ -412,6 +414,13 @@ def test_registered_path_wins_over_stale_media_duplicate(tmp_path: Path) -> None
     assert not (destination / "AI 工具" / "旧副本").exists()
     assert stale.is_dir()
 
+    cleaned = cleanup_legacy_results(instance)
+
+    assert cleaned["deleted"] == 2
+    assert cleaned["verified"] == 1
+    assert cleaned["duplicates_deleted"] == 1
+    assert not (instance / "library").exists()
+
 
 def test_media_duplicates_without_authoritative_source_are_blocked(tmp_path: Path) -> None:
     instance = tmp_path / "private"
@@ -666,3 +675,143 @@ def test_migrate_inspect_cli_is_read_only_and_safe(
     serialized = json.dumps(payload, ensure_ascii=False)
     assert title not in serialized
     assert str(instance) not in serialized
+
+
+def test_cleanup_removes_only_verified_legacy_results_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    entry_ref = "aweme-0123456789abcdefabcd"
+    source = _legacy_entry(instance, entry_ref=entry_ref)
+    database = _registry(instance, entry_ref, source)
+    destination = tmp_path / "results"
+    configure_results_root(instance, destination)
+    migrate_legacy_results(instance)
+
+    first = cleanup_legacy_results(instance)
+    second = cleanup_legacy_results(instance)
+
+    assert first == {
+        "status": "cleaned",
+        "deleted": 1,
+        "verified": 1,
+        "duplicates_deleted": 0,
+        "source_removed": True,
+        "results_preserved": True,
+        "publication_history_preserved": True,
+        "state_handle": "data/migrations/results-cleanup-v1.json",
+    }
+    assert second == first
+    assert not (instance / "library").exists()
+    assert (destination / "AI 工具" / "清晰标题" / "内容整理.md").is_file()
+    assert (instance / "data" / "migrations" / "results-v1.json").is_file()
+    assert inspect_legacy_results(instance)["discovered"] == 0
+    with sqlite3.connect(database) as connection:
+        registered = connection.execute(
+            "SELECT library_path FROM collection_items WHERE job_id = ?", (entry_ref,)
+        ).fetchone()[0]
+    assert Path(registered) == destination / "AI 工具" / "清晰标题"
+
+
+def test_cleanup_refuses_unknown_legacy_files(tmp_path: Path) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    entry_ref = "aweme-0123456789abcdefabcd"
+    source = _legacy_entry(instance, entry_ref=entry_ref)
+    _registry(instance, entry_ref, source)
+    destination = tmp_path / "results"
+    configure_results_root(instance, destination)
+    migrate_legacy_results(instance)
+    (instance / "library" / "unknown.bin").write_bytes(b"do not delete")
+
+    with pytest.raises(ResultsMigrationError) as error:
+        cleanup_legacy_results(instance)
+
+    assert error.value.code == "results_cleanup_scope_unsafe"
+    assert (instance / "library" / "unknown.bin").is_file()
+    assert (destination / "AI 工具" / "清晰标题").is_dir()
+
+
+def test_cleanup_refuses_a_changed_migrated_target(tmp_path: Path) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    entry_ref = "aweme-0123456789abcdefabcd"
+    source = _legacy_entry(instance, entry_ref=entry_ref)
+    _registry(instance, entry_ref, source)
+    destination = tmp_path / "results"
+    configure_results_root(instance, destination)
+    migrate_legacy_results(instance)
+    (destination / "AI 工具" / "清晰标题" / "内容整理.md").write_text(
+        "changed", encoding="utf-8"
+    )
+
+    with pytest.raises(ResultsMigrationError) as error:
+        cleanup_legacy_results(instance)
+
+    assert error.value.code == "results_cleanup_target_unverified"
+    assert (instance / "library").is_dir()
+
+
+def test_cleanup_resumes_after_delete_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    entry_ref = "aweme-0123456789abcdefabcd"
+    source = _legacy_entry(instance, entry_ref=entry_ref)
+    _registry(instance, entry_ref, source)
+    configure_results_root(instance, tmp_path / "results")
+    migrate_legacy_results(instance)
+    real_rmtree = results_migration.shutil.rmtree
+
+    def fail_delete(_path: Path) -> None:
+        raise OSError("simulated interruption")
+
+    monkeypatch.setattr(results_migration.shutil, "rmtree", fail_delete)
+    with pytest.raises(ResultsMigrationError) as error:
+        cleanup_legacy_results(instance)
+    assert error.value.code == "results_cleanup_delete_failed"
+    assert not (instance / "library").exists()
+
+    monkeypatch.setattr(results_migration.shutil, "rmtree", real_rmtree)
+    resumed = cleanup_legacy_results(instance)
+
+    assert resumed["source_removed"] is True
+    assert resumed["deleted"] == 1
+
+
+def test_cleanup_cli_requires_confirmation_and_returns_safe_counts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    instance = tmp_path / "private"
+    _initialized(instance)
+    entry_ref = "aweme-0123456789abcdefabcd"
+    source = _legacy_entry(instance, entry_ref=entry_ref)
+    _registry(instance, entry_ref, source)
+    configure_results_root(instance, tmp_path / "results")
+    migrate_legacy_results(instance)
+
+    assert main(["--root", str(instance), "migrate", "cleanup", "--json"]) == 2
+    blocked = json.loads(capsys.readouterr().out)
+    assert blocked["error"]["code"] == "confirmation_required"
+
+    assert (
+        main(
+            [
+                "--root",
+                str(instance),
+                "migrate",
+                "cleanup",
+                "--confirm",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["operation"] == "migrate_cleanup"
+    assert payload["data"]["deleted"] == 1
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert str(instance) not in serialized
+    assert str(tmp_path / "results") not in serialized

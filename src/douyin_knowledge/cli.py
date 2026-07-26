@@ -33,6 +33,7 @@ from douyin_knowledge.result_archive import (
 )
 from douyin_knowledge.results_migration import (
     ResultsMigrationError,
+    cleanup_legacy_results,
     inspect_legacy_results,
     migrate_legacy_results,
 )
@@ -612,6 +613,9 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_results = migrate_commands.add_parser("results")
     migrate_results.add_argument("--confirm", action="store_true")
     migrate_results.add_argument("--json", action="store_true")
+    migrate_cleanup = migrate_commands.add_parser("cleanup")
+    migrate_cleanup.add_argument("--confirm", action="store_true")
+    migrate_cleanup.add_argument("--json", action="store_true")
     return parser
 
 
@@ -646,7 +650,7 @@ def main(argv: list[str] | None = None) -> int:
                     data,
                     summary=f"inspected {data['discovered']} legacy results",
                 )
-            else:
+            elif args.migrate_command == "results":
                 if not args.confirm:
                     _confirmation("migrate results")
                 data = migrate_legacy_results(root)
@@ -654,6 +658,15 @@ def main(argv: list[str] | None = None) -> int:
                     "migrate_results",
                     data,
                     summary=f"verified {data['verified']} migrated legacy results",
+                )
+            else:
+                if not args.confirm:
+                    _confirmation("cleanup legacy results")
+                data = cleanup_legacy_results(root)
+                payload = success(
+                    "migrate_cleanup",
+                    data,
+                    summary=f"deleted {data['deleted']} verified legacy result directories",
                 )
         elif operation == "plan":
             payload = _plan(root, int(args.limit))
@@ -818,10 +831,15 @@ def main(argv: list[str] | None = None) -> int:
         payload = failure(operation, error)
         exit_code = error.exit_code
     except ResultsMigrationError as exc:
+        action = (
+            "preserve the cleanup checkpoint and new results, then retry the same cleanup"
+            if exc.code.startswith("results_cleanup_")
+            else "preserve both roots, correct the reported conflict, then retry migration"
+        )
         error = CliError(
             exc.code,
             str(exc),
-            "preserve both roots, correct the reported conflict, then retry migration",
+            action,
         )
         payload = failure(operation, error)
         exit_code = error.exit_code

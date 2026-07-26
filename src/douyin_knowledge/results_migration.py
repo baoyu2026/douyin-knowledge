@@ -36,6 +36,8 @@ ARTIFACT_NAMES = {
     Path("附件/完整时间轴.md"): "timeline",
     Path("精选关键帧"): "keyframes_directory",
 }
+RESULTS_CLEANUP_STATE = Path("data/migrations/results-cleanup-v1.json")
+_CLEANUP_STAGING_PREFIX = ".legacy-results-cleanup-"
 
 
 class ResultsMigrationError(RuntimeError):
@@ -609,6 +611,34 @@ def _register_target(
         ) from exc
 
 
+def _resolve_source_refs(
+    instance_root: Path,
+    legacy_root: Path,
+    entries: list[Path],
+    checkpoint: dict[str, dict[str, str]],
+) -> tuple[dict[str, tuple[str, str | None, str]], int]:
+    source_refs: dict[str, tuple[str, str | None, str]] = {}
+    for source in entries:
+        source_handle = source.relative_to(legacy_root).as_posix()
+        manifest = source / "资料信息.yml"
+        generated_manifest = None
+        if manifest.is_file():
+            entry_ref = _entry_ref(source)
+            method = "manifest"
+        else:
+            previous = checkpoint.get(source_handle)
+            if previous is not None and "entry_ref" in previous:
+                entry_ref = previous["entry_ref"]
+                method = "checkpoint"
+            else:
+                entry_ref, method = _registered_entry(
+                    instance_root / "data" / "knowledge.db", instance_root, source
+                )
+            generated_manifest = _generated_manifest(entry_ref, source)
+        source_refs[source_handle] = (entry_ref, generated_manifest, method)
+    return _select_authoritative_sources(source_refs)
+
+
 def migrate_legacy_results(instance_root: Path) -> dict[str, Any]:
     instance_root = instance_root.resolve()
     try:
@@ -627,30 +657,9 @@ def migrate_legacy_results(instance_root: Path) -> dict[str, Any]:
 
     discovered_entries = _discover_entries(legacy_root)
     checkpoint = _checkpoint_records(instance_root / RESULTS_MIGRATION_STATE)
-    source_refs: dict[str, tuple[str, str | None, str]] = {}
-    for source in discovered_entries:
-        source_handle = source.relative_to(legacy_root).as_posix()
-        manifest = source / "资料信息.yml"
-        generated_manifest = None
-        if manifest.is_file():
-            entry_ref = _entry_ref(source)
-            method = "manifest"
-        else:
-            previous = checkpoint.get(source_handle)
-            if previous is not None and "entry_ref" in previous:
-                entry_ref = previous["entry_ref"]
-                method = "checkpoint"
-            else:
-                entry_ref, method = _registered_entry(
-                    instance_root / "data" / "knowledge.db", instance_root, source
-                )
-            generated_manifest = _generated_manifest(entry_ref, source)
-        source_refs[source_handle] = (
-            entry_ref,
-            generated_manifest,
-            method,
-        )
-    source_refs, duplicates_skipped = _select_authoritative_sources(source_refs)
+    source_refs, duplicates_skipped = _resolve_source_refs(
+        instance_root, legacy_root, discovered_entries, checkpoint
+    )
     entries = [
         source
         for source in discovered_entries
@@ -745,4 +754,242 @@ def migrate_legacy_results(instance_root: Path) -> dict[str, Any]:
         "source_preserved": True,
         "index_rebuilt": True,
         "state_handle": RESULTS_MIGRATION_STATE.as_posix(),
+    }
+
+
+def _migration_checkpoint_complete(path: Path) -> bool:
+    _checkpoint_records(path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ResultsMigrationError(
+            "results_migration_state_invalid", "the migration checkpoint is invalid"
+        ) from exc
+    return isinstance(payload, dict) and payload.get("complete") is True
+
+
+def _target_is_registered(
+    database: Path,
+    instance_root: Path,
+    entry_ref: str,
+    target: Path,
+) -> bool:
+    if not database.is_file():
+        return False
+    try:
+        with sqlite3.connect(database) as connection:
+            row = connection.execute(
+                "SELECT library_path FROM collection_items WHERE job_id = ?", (entry_ref,)
+            ).fetchone()
+    except sqlite3.Error as exc:
+        raise ResultsMigrationError(
+            "results_cleanup_registry_failed", "the result registry is unreadable"
+        ) from exc
+    if row is None or not row[0]:
+        return False
+    registered = Path(str(row[0]))
+    if not registered.is_absolute():
+        registered = instance_root / registered
+    return registered.resolve() == target.resolve()
+
+
+def _validate_cleanup_scope(legacy_root: Path, entries: list[Path]) -> None:
+    if legacy_root.is_symlink() or any(item.is_symlink() for item in legacy_root.rglob("*")):
+        raise ResultsMigrationError(
+            "results_cleanup_scope_unsafe", "legacy cleanup must not traverse symbolic links"
+        )
+    known_entries = {entry.resolve() for entry in entries}
+    for child in legacy_root.iterdir():
+        if child.name == INDEX_DIR_NAME:
+            if not child.is_dir():
+                raise ResultsMigrationError(
+                    "results_cleanup_scope_unsafe", "the legacy index is not a directory"
+                )
+            continue
+        if not child.is_dir():
+            raise ResultsMigrationError(
+                "results_cleanup_scope_unsafe", "the legacy root contains an unknown file"
+            )
+        for entry in child.iterdir():
+            if not entry.is_dir() or entry.resolve() not in known_entries:
+                raise ResultsMigrationError(
+                    "results_cleanup_scope_unsafe",
+                    "a legacy category contains an unknown artifact",
+                )
+
+
+def _verified_cleanup_plan(instance_root: Path) -> dict[str, Any]:
+    destination = configured_results_root(instance_root)
+    if destination is None or not destination.is_dir():
+        raise ResultsMigrationError(
+            "results_root_required", "a configured results root is required before cleanup"
+        )
+    legacy_root = instance_root / LEGACY_LIBRARY_ROOT
+    entries = _discover_entries(legacy_root)
+    _validate_cleanup_scope(legacy_root, entries)
+    checkpoint_path = instance_root / RESULTS_MIGRATION_STATE
+    checkpoint = _checkpoint_records(checkpoint_path)
+    if not _migration_checkpoint_complete(checkpoint_path):
+        raise ResultsMigrationError(
+            "results_cleanup_not_ready", "legacy results have not completed migration"
+        )
+    source_refs, duplicates_skipped = _resolve_source_refs(
+        instance_root, legacy_root, entries, checkpoint
+    )
+    if set(checkpoint) != set(source_refs):
+        raise ResultsMigrationError(
+            "results_cleanup_not_ready", "migration does not cover every authoritative result"
+        )
+    database = instance_root / "data" / "knowledge.db"
+    verified = 0
+    for source_handle, (entry_ref, generated_manifest, _method) in source_refs.items():
+        source = legacy_root / Path(*PurePosixPath(source_handle).parts)
+        record = checkpoint[source_handle]
+        source_digest = _tree_digest(source)
+        expected_source = record.get("source_sha256", record["sha256"])
+        synthetic = (
+            {"资料信息.yml": generated_manifest.encode("utf-8")}
+            if generated_manifest is not None
+            else {}
+        )
+        expected_target = _tree_digest_with_files(source, synthetic)
+        if (
+            record.get("entry_ref", entry_ref) != entry_ref
+            or source_digest != expected_source
+            or expected_target != record["sha256"]
+        ):
+            raise ResultsMigrationError(
+                "results_cleanup_source_changed",
+                "a legacy result changed after verified migration",
+            )
+        target = (destination / Path(*PurePosixPath(record["target"]).parts)).resolve()
+        try:
+            target.relative_to(destination)
+        except ValueError as exc:
+            raise ResultsMigrationError(
+                "results_migration_state_invalid",
+                "a migration checkpoint target escapes the results root",
+            ) from exc
+        if (
+            not target.is_dir()
+            or _tree_digest(target) != record["sha256"]
+            or _entry_ref(target) != entry_ref
+            or not _target_is_registered(database, instance_root, entry_ref, target)
+        ):
+            raise ResultsMigrationError(
+                "results_cleanup_target_unverified",
+                "a migrated result or registry binding is no longer verified",
+            )
+        verified += 1
+    return {
+        "discovered": len(entries),
+        "verified": verified,
+        "duplicates": duplicates_skipped,
+    }
+
+
+def _cleanup_state(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ResultsMigrationError(
+            "results_cleanup_state_invalid", "the cleanup checkpoint is invalid"
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise ResultsMigrationError(
+            "results_cleanup_state_invalid", "the cleanup checkpoint is unsupported"
+        )
+    staging = payload.get("staging")
+    digest = payload.get("legacy_sha256")
+    counts = (payload.get("discovered"), payload.get("verified"), payload.get("duplicates"))
+    if (
+        payload.get("phase") not in {"planned", "deleting", "complete"}
+        or not isinstance(staging, str)
+        or not staging.startswith(_CLEANUP_STAGING_PREFIX)
+        or len(staging) != len(_CLEANUP_STAGING_PREFIX) + 32
+        or any(character not in "0123456789abcdef" for character in staging[-32:])
+        or not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        or not all(isinstance(count, int) and count >= 0 for count in counts)
+    ):
+        raise ResultsMigrationError(
+            "results_cleanup_state_invalid", "the cleanup checkpoint is unsafe"
+        )
+    return payload
+
+
+def cleanup_legacy_results(instance_root: Path) -> dict[str, Any]:
+    instance_root = instance_root.resolve()
+    legacy_root = instance_root / LEGACY_LIBRARY_ROOT
+    state_path = instance_root / RESULTS_CLEANUP_STATE
+    state = _cleanup_state(state_path)
+    if state is None:
+        if not legacy_root.exists():
+            return {
+                "status": "no_work",
+                "deleted": 0,
+                "verified": 0,
+                "duplicates_deleted": 0,
+                "source_removed": True,
+                "results_preserved": True,
+                "publication_history_preserved": True,
+                "state_handle": RESULTS_CLEANUP_STATE.as_posix(),
+            }
+        plan = _verified_cleanup_plan(instance_root)
+        state = {
+            "schema_version": 1,
+            "phase": "planned",
+            "staging": f"{_CLEANUP_STAGING_PREFIX}{uuid.uuid4().hex}",
+            "legacy_sha256": _tree_digest(legacy_root),
+            **plan,
+        }
+        _atomic_json(state_path, state)
+    staging = state_path.parent / str(state["staging"])
+    if state["phase"] == "complete":
+        if legacy_root.exists() or staging.exists():
+            raise ResultsMigrationError(
+                "results_cleanup_state_invalid",
+                "legacy results reappeared after completed cleanup",
+            )
+    else:
+        if legacy_root.exists() and staging.exists():
+            raise ResultsMigrationError(
+                "results_cleanup_state_invalid", "both cleanup sources exist"
+            )
+        if legacy_root.exists():
+            if _tree_digest(legacy_root) != state["legacy_sha256"]:
+                raise ResultsMigrationError(
+                    "results_cleanup_source_changed",
+                    "legacy results changed after cleanup was planned",
+                )
+            os.replace(legacy_root, staging)
+            state["phase"] = "deleting"
+            _atomic_json(state_path, state)
+        if staging.exists():
+            if _tree_digest(staging) != state["legacy_sha256"]:
+                raise ResultsMigrationError(
+                    "results_cleanup_source_changed",
+                    "staged legacy results changed during cleanup",
+                )
+            try:
+                shutil.rmtree(staging)
+            except OSError as exc:
+                raise ResultsMigrationError(
+                    "results_cleanup_delete_failed",
+                    "staged legacy results could not be deleted",
+                ) from exc
+        state["phase"] = "complete"
+        _atomic_json(state_path, state)
+    return {
+        "status": "cleaned",
+        "deleted": int(state["discovered"]),
+        "verified": int(state["verified"]),
+        "duplicates_deleted": int(state["duplicates"]),
+        "source_removed": not legacy_root.exists() and not staging.exists(),
+        "results_preserved": True,
+        "publication_history_preserved": True,
+        "state_handle": RESULTS_CLEANUP_STATE.as_posix(),
     }

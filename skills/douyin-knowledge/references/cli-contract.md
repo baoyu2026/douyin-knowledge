@@ -32,6 +32,7 @@ instance without putting either absolute path in conversational output.
 <invoke> configure results --path <absolute-folder> --confirm --json
 <invoke> migrate inspect --json
 <invoke> migrate results --confirm --json
+<invoke> migrate cleanup --confirm --json
 <invoke> plan --limit 1 --json
 <invoke> login --confirm --json
 <invoke> model install --name small --confirm --json
@@ -97,6 +98,15 @@ registered legacy path is authoritative and media-fingerprint-only duplicates re
 preserved under the legacy root; report them as `duplicates_skipped`. If there is no
 single authoritative source, inspection reports a blocking duplicate-reference
 conflict and migration must stop.
+
+`migrate cleanup` is an optional irreversible follow-up. Run it only after migration
+has completed and the user separately confirms deletion. It revalidates every
+authoritative source, destination hash, generated manifest, checkpoint record, and
+registry binding before atomically moving the complete legacy root into a private
+deletion stage. It then deletes the migrated sources, legacy indexes, and stale
+duplicates, while preserving the configured results archive, migration checkpoint,
+and historical publication journal. The cleanup checkpoint makes an interrupted
+delete resumable. Never substitute a manual recursive delete.
 
 `run` stops at `download`, `analysis`, `packet`, or `staging`. It never invokes an AI
 model and never publishes. `canary` is fixed at one item and stops at `packet`.

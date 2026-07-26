@@ -8,6 +8,12 @@ reused. A `results_migration_conflict` means the same entry differs between root
 do not overwrite either copy until the difference is resolved. Migration never
 changes accepted/completed state.
 
+For an interrupted `migrate cleanup`, rerun the same confirmed cleanup command. The
+cleanup checkpoint identifies whether the legacy root was still in place, atomically
+staged, or already deleted. Do not move or delete the staging directory manually.
+Cleanup is permitted only after every authoritative destination and registry binding
+has been reverified; it never deletes the migration checkpoint or publication journal.
+
 For `results_migration_entry_incomplete`, do not retry the same migration blindly.
 Run read-only `migrate inspect` and use only its issue counts to determine whether a
 legacy-format compatibility repair is required. Entries reported as `repairable`

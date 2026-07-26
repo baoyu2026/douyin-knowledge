@@ -118,7 +118,15 @@ $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 
 检查结果只返回完整/不完整数量、可自动兼容数量和缺项类型数量，不公开标题、任务引用或路径。旧版本成果如果只有 `资料信息.yml` 缺失，并且能通过旧路径或原视频 SHA-256 指纹唯一对应到数据库记录，会计入 `repairable`，不视为损坏；指纹重复时不会猜测。
 
-迁移会复制结构完整的历史成果、逐条校验来源与新副本哈希、重建 `00-总索引`，并登记新位置供后续纠错复用。对于上述旧格式成果，`资料信息.yml` 只会生成在新副本中，旧目录保持原样。同一视频存在旧副本时，以数据库原登记路径对应的成果为权威版本，其余保留在旧目录并计入 `duplicates_skipped`；没有唯一权威版本时迁移会停止。重复执行会复用已经验证的副本；如果同一成果在目标目录中被改过，命令会停止并保留两边文件，不会覆盖。旧 `library` 和历史发布 journal 始终保留，所以迁移成功不等于视频被重新发布，也不会改写 `accepted` 或 `completed` 状态。
+迁移会复制结构完整的历史成果、逐条校验来源与新副本哈希、重建 `00-总索引`，并登记新位置供后续纠错复用。对于上述旧格式成果，`资料信息.yml` 只会生成在新副本中，旧目录保持原样。同一视频存在旧副本时，以数据库原登记路径对应的成果为权威版本，其余保留在旧目录并计入 `duplicates_skipped`；没有唯一权威版本时迁移会停止。重复执行会复用已经验证的副本；如果同一成果在目标目录中被改过，命令会停止并保留两边文件，不会覆盖。迁移成功不等于视频被重新发布，也不会改写 `accepted` 或 `completed` 状态。
+
+确认新成果库可用后，如需永久删除旧 `library`、旧索引和重复副本，可另行执行：
+
+```powershell
+& $DK migrate cleanup --confirm --json
+```
+
+清理会重新验证新副本、迁移检查点和数据库登记；任何一项不一致都会停止。删除采用可断点恢复的中间状态，保留新成果库、迁移检查点和历史发布 journal，但旧目录本身无法恢复。
 
 成果库开始参与新发布对账后不能直接改根目录，否则历史 journal 无法确认原文件。当前迁移命令只负责从旧版 `library` 过渡到首次配置的人类成果库，不支持搬迁一个已经产生 `results/` journal 的成果库。
 
@@ -152,6 +160,7 @@ $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 & $DK doctor --json
 & $DK configure results --path 'D:\知识库\抖音收藏成果' --confirm --json
 & $DK migrate results --confirm --json
+& $DK migrate cleanup --confirm --json
 & $DK login --confirm --json
 & $DK model install --name small --confirm --json
 & $DK sync --confirm --json
@@ -165,6 +174,7 @@ $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 - `plan` 返回稳定的任务引用，不修改内容。
 - `canary` 只处理一条，并停在语义证据包；它不调用额外模型，也不发布。
 - `migrate results` 只复制并校验旧成果，保留旧目录，不重新处理视频。
+- `migrate cleanup` 只在迁移完整且新副本重新验证通过后永久删除旧成果。
 
 首次安装 Chromium 和本地模型需要一定时间与磁盘空间。任何阶段中断后，先运行 `status --json` 和 `doctor --json`，再使用原任务引用恢复，不要另选一条替代。
 
@@ -262,7 +272,7 @@ git pull
 .\.venv\Scripts\python.exe -m compileall -q app src
 .\.venv\Scripts\python.exe -m build
 .\scripts\test-distribution.ps1 `
-  -WheelPath .\dist\douyin_knowledge-1.4.1-py3-none-any.whl `
+  -WheelPath .\dist\douyin_knowledge-1.4.2-py3-none-any.whl `
   -Python .\.venv\Scripts\python.exe
 ```
 
