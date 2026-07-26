@@ -1,3 +1,3 @@
 """Public package for the douyin-knowledge engine and Skill."""
 
-__version__ = "1.4.3"
+__version__ = "1.4.4"

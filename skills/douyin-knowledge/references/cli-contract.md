@@ -33,11 +33,11 @@ instance without putting either absolute path in conversational output.
 <invoke> migrate inspect --json
 <invoke> migrate results --confirm --json
 <invoke> migrate cleanup --confirm --json
-<invoke> plan --limit 1 --json
+<invoke> plan --limit 1 [--status <new|failed|incomplete|downloaded|analyzed>] --json
 <invoke> login --confirm --json
 <invoke> model install --name small --confirm --json
 <invoke> sync --confirm --json
-<invoke> canary --limit 1 --no-publish --confirm --json
+<invoke> canary --limit 1 [--status <new|failed|incomplete|downloaded|analyzed>] --no-publish --confirm --json
 <invoke> run --job-ref <ref> --stop-after packet --confirm --json
 <invoke> packet export --job-ref <ref> --json
 <invoke> candidate import --job-ref <ref> --input <file> --json
@@ -110,6 +110,11 @@ delete resumable. Never substitute a manual recursive delete.
 
 `run` stops at `download`, `analysis`, `packet`, or `staging`. It never invokes an AI
 model and never publishes. `canary` is fixed at one item and stops at `packet`.
+Use the same `--status` value on `plan` and `canary` when the requested workflow
+depends on the item's authoritative starting state. In particular, use `new` instead
+of accepting an analyzed collection item. This filter does not assert that media or
+analysis files are absent: require `download_reused=false` and
+`analysis_reused=false` in the run result before claiming a cold run.
 
 The CLI permits local analysis to run for up to two hours. The host invocation must
 also allow at least two hours, or use a session that can yield and later resume. A

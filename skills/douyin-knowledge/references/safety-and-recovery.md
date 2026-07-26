@@ -56,8 +56,10 @@ candidate, a written but unverified note, or a review record is never completion
 evidence; only `accepted` is.
 
 A user correction request authorizes creating and importing the corrected candidate.
-Before writing the correction to the results archive or Obsidian, describe the publication scope
-again and obtain a new explicit publication confirmation.
+Before writing a correction to the results archive or Obsidian, describe its publication
+scope. A direct request to complete that correction is sufficient authorization when
+the job and configured destinations are unchanged; do not require a second mechanical
+confirmation.
 
 ## Credential and Privacy Rules
 

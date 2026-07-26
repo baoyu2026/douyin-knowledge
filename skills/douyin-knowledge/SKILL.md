@@ -45,8 +45,11 @@ instance directory. Never treat an assistant message as completion evidence.
   `migrate cleanup` only after a successful migration and a fresh explicit cleanup
   confirmation. Never delete the legacy root manually.
 - For collection refresh, run confirmed `sync`; it must not download media.
-- For one item, use `plan --limit 1`, select that returned `job_ref`, then run a
-  no-publish canary within the user's authorized scope.
+- For one item, use `plan --limit 1`; add `--status new` when the request requires an
+  item whose authoritative collection status is new. Select that returned `job_ref`,
+  then run a no-publish canary with the same status filter within the user's authorized
+  scope. A new registry item can still have cached media from an earlier probe; require
+  both returned reuse flags to be false before describing the execution as a cold run.
 - For semantic work, export one packet and assign it to exactly one worker. That
   same worker must personally read every evidence chunk, inspect every visual, and
   atomically write one pure JSON candidate; never split or re-delegate a partially
@@ -102,7 +105,7 @@ instance directory. Never treat an assistant message as completion evidence.
   and cleanup remain separately scoped operations.
 - Keep publishing disabled by default. Use `canary --limit 1 --no-publish` first.
 - Never call an undocumented "next item" selector. Use `plan`, an explicit limit,
-  and stable `job_ref` values.
+  an explicit status when state matters, and stable `job_ref` values.
 - Limit execution to one CPU analysis, at most two semantic workers, and one serial
   publisher. Default batch size to one; do not exceed five after a successful canary.
 - Stop after the same failure occurs twice. Preserve the checkpoint and state the

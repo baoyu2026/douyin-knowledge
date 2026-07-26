@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -322,3 +323,52 @@ def test_batch_plan_requires_successful_canary(tmp_path: Path, capsys) -> None:
     code, planned = invoke(["--root", str(tmp_path), "plan", "--limit", "2", "--json"], capsys)
     assert code == 0
     assert planned["data"]["limit"] == 2
+
+
+def test_canary_status_filter_selects_a_new_item(tmp_path: Path, capsys) -> None:
+    analyzed_job_ref = _fixture(tmp_path)
+    new_job_ref = "aweme-11111111111111111111"
+    database = tmp_path / "data" / "knowledge.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE collection_items SET status = 'analyzed' WHERE job_id = ?",
+            (analyzed_job_ref,),
+        )
+        existing = connection.execute(
+            "SELECT * FROM collection_items WHERE job_id = ?", (analyzed_job_ref,)
+        ).fetchone()
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(collection_items)")]
+        values = list(existing)
+        values[columns.index("source_id")] = "private-new-source"
+        values[columns.index("aweme_id")] = "private-new-aweme"
+        values[columns.index("job_id")] = new_job_ref
+        values[columns.index("status")] = "new"
+        values[columns.index("last_position")] = 2
+        connection.execute(
+            f"INSERT INTO collection_items({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            values,
+        )
+    shutil.copytree(
+        tmp_path / "data" / "jobs" / analyzed_job_ref,
+        tmp_path / "data" / "jobs" / new_job_ref,
+    )
+
+    code, payload = invoke(
+        [
+            "--root",
+            str(tmp_path),
+            "canary",
+            "--limit",
+            "1",
+            "--status",
+            "new",
+            "--no-publish",
+            "--confirm",
+            "--json",
+        ],
+        capsys,
+    )
+
+    assert code == 0
+    assert payload["data"]["job_ref"] == new_job_ref

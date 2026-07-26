@@ -164,8 +164,8 @@ $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 & $DK login --confirm --json
 & $DK model install --name small --confirm --json
 & $DK sync --confirm --json
-& $DK plan --limit 1 --json
-& $DK canary --limit 1 --no-publish --confirm --json
+& $DK plan --limit 1 --status new --json
+& $DK canary --limit 1 --status new --no-publish --confirm --json
 ```
 
 - `login` 打开交互式浏览器，Cookie 只保存在私有实例。
@@ -272,7 +272,7 @@ git pull
 .\.venv\Scripts\python.exe -m compileall -q app src
 .\.venv\Scripts\python.exe -m build
 .\scripts\test-distribution.ps1 `
-  -WheelPath .\dist\douyin_knowledge-1.4.3-py3-none-any.whl `
+  -WheelPath .\dist\douyin_knowledge-1.4.4-py3-none-any.whl `
   -Python .\.venv\Scripts\python.exe
 ```
 

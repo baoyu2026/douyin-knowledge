@@ -84,10 +84,11 @@ candidate, run `candidate repair-contract`.
 
 ## Publication and Correction
 
-After successful import, treat the candidate as staged and ready for a separately
-confirmed publication. Do not pause for draft approval and do not count candidate
-import as completion. Publish to the results archive and Obsidian, reconcile the sealed targets,
-and require `accepted` before reporting the job complete.
+After successful import, treat the candidate as staged. When the user's scoped request
+already authorized the fixed job through publication to configured destinations, do
+not request another mechanical confirmation. Do not pause for draft approval and do
+not count candidate import as completion. Publish to the results archive and Obsidian,
+reconcile the sealed targets, and require `accepted` before reporting the job complete.
 
 The published Obsidian note starts with `review_status: unreviewed`; its independent
 `evidence_status` reflects the candidate's evidence checks. If the user later reports

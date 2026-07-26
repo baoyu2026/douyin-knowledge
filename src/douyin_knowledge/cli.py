@@ -50,6 +50,7 @@ INSTANCE_DIRS = (
     "quarantine",
     "schemas",
 )
+PLAN_STATUSES = ("new", "failed", "incomplete", "downloaded", "analyzed")
 DEFAULT_CONFIG = """version: 1
 project:
   data_root: ./data
@@ -294,7 +295,7 @@ def _status(root: Path) -> dict[str, Any]:
     return success("status", data, summary=f"{data['total']} collection items")
 
 
-def _plan(root: Path, limit: int) -> dict[str, Any]:
+def _plan(root: Path, limit: int, status: str | None = None) -> dict[str, Any]:
     if not 1 <= limit <= 5:
         raise CliError(
             "invalid_limit",
@@ -321,12 +322,17 @@ def _plan(root: Path, limit: int) -> dict[str, Any]:
                 if {"job_id", "status"}.issubset(columns):
                     position = "last_position" if "last_position" in columns else "0"
                     collected = "currently_collected" if "currently_collected" in columns else "1"
+                    status_clause = "status != 'completed'"
+                    parameters: tuple[object, ...] = (limit,)
+                    if status is not None:
+                        status_clause = "status = ?"
+                        parameters = (status, limit)
                     rows = connection.execute(
                         f"SELECT job_id, status, {position} AS position "
                         "FROM collection_items "
-                        f"WHERE {collected} = 1 AND status != 'completed' "
+                        f"WHERE {collected} = 1 AND {status_clause} "
                         "ORDER BY position ASC, job_id ASC LIMIT ?",
-                        (limit,),
+                        parameters,
                     ).fetchall()
                     items = [
                         {
@@ -338,9 +344,12 @@ def _plan(root: Path, limit: int) -> dict[str, Any]:
                     ]
         finally:
             connection.close()
+    data: dict[str, Any] = {"limit": limit, "items": items, "publish": False}
+    if status is not None:
+        data["status"] = status
     return success(
         "plan",
-        {"limit": limit, "items": items, "publish": False},
+        data,
         summary=f"planned {len(items)} items without claiming work",
     )
 
@@ -544,6 +553,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--json", action="store_true")
     plan = subparsers.add_parser("plan")
     plan.add_argument("--limit", type=int, default=1)
+    plan.add_argument("--status", choices=PLAN_STATUSES)
     plan.add_argument("--json", action="store_true")
     packet = subparsers.add_parser("packet")
     packet_commands = packet.add_subparsers(dest="packet_command", required=True)
@@ -591,6 +601,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--json", action="store_true")
     canary = subparsers.add_parser("canary")
     canary.add_argument("--limit", type=int, default=1)
+    canary.add_argument("--status", choices=PLAN_STATUSES)
     canary.add_argument("--no-publish", action="store_true", required=True)
     canary.add_argument("--confirm", action="store_true")
     canary.add_argument("--json", action="store_true")
@@ -669,7 +680,7 @@ def main(argv: list[str] | None = None) -> int:
                     summary=f"deleted {data['deleted']} verified legacy result directories",
                 )
         elif operation == "plan":
-            payload = _plan(root, int(args.limit))
+            payload = _plan(root, int(args.limit), args.status)
         elif operation == "packet":
             data = export_packet(root, str(args.job_ref))
             payload = success(
@@ -777,7 +788,7 @@ def main(argv: list[str] | None = None) -> int:
                     "canary limit must be exactly one",
                     "run one no-publish canary before any batch",
                 )
-            planned = _plan(root, 1)["data"]["items"]
+            planned = _plan(root, 1, args.status)["data"]["items"]
             data = (
                 {"status": "no_work", "items": [], "publish": False, "model_calls": 0}
                 if not planned

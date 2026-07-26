@@ -157,6 +157,46 @@ def test_plan_rejects_batch_larger_than_public_safety_limit(tmp_path: Path, caps
     assert payload["error"]["code"] == "invalid_limit"
 
 
+def test_plan_can_select_only_new_items(tmp_path: Path, capsys) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    database = data / "knowledge.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE collection_items("
+            "job_id TEXT PRIMARY KEY, status TEXT NOT NULL, "
+            "last_position INTEGER NOT NULL, currently_collected INTEGER NOT NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO collection_items VALUES (?, ?, ?, ?)",
+            [
+                ("aweme-00000000000000000001", "analyzed", 1, 1),
+                ("aweme-00000000000000000002", "new", 3, 1),
+                ("aweme-00000000000000000003", "new", 2, 1),
+                ("aweme-00000000000000000004", "new", 1, 0),
+            ],
+        )
+
+    code, payload = invoke(
+        ["--root", str(tmp_path), "plan", "--status", "new", "--limit", "1", "--json"],
+        capsys,
+    )
+
+    assert code == 0
+    assert payload["data"] == {
+        "limit": 1,
+        "items": [
+            {
+                "job_ref": "aweme-00000000000000000003",
+                "status": "new",
+                "position": 2,
+            }
+        ],
+        "publish": False,
+        "status": "new",
+    }
+
+
 def test_argument_errors_use_json_contract(capsys) -> None:
     code, payload = invoke(["unknown-command"], capsys)
     assert code == 2

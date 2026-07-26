@@ -39,6 +39,12 @@ Install with the bundled `install-skill.ps1`, restart Codex so discovery metadat
 reloaded, and use `scripts/invoke.ps1` from the installed Skill. Shell output is not
 completion evidence; parse the CLI envelope and honor its error fields.
 
+When a delegated worker can read files but must not read the runtime binding, the
+orchestrator may materialize only the current exported sanitized bundle into an
+isolated temporary directory, give that directory to the worker read-only, and delete
+it after the assignment. Never include source media, credentials, logs, the database,
+or another job in that directory.
+
 ## OpenClaw and Other Hosts
 
 No OpenClaw installation path or end-to-end orchestration is certified in this
