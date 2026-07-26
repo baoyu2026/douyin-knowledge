@@ -238,6 +238,8 @@ def test_confirmed_publish_accepts_staged_candidate_without_review(
     draft.parent.mkdir(parents=True)
     payload = _payload()
     payload["primary_category"] = "AI 工具与智能体"
+    payload["timeline_interpretation"][1]["timestamp"] = "00:15"
+    payload["timeline_interpretation"][2]["timestamp"] = "00:29"
     draft.write_text(
         render_structured_markdown(
             tmp_path,

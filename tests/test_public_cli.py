@@ -56,6 +56,7 @@ def test_init_is_idempotent_and_returns_safe_envelope(tmp_path: Path, capsys) ->
     assert (tmp_path / "data" / "jobs").is_dir()
     assert (tmp_path / "data" / "tasks").is_dir()
     assert (tmp_path / "schemas" / "structured-content-v1.schema.json").is_file()
+    assert (tmp_path / "schemas" / "structured-content-v2.schema.json").is_file()
     assert (tmp_path / "schemas" / "cli-envelope-v1.schema.json").is_file()
     assert (tmp_path / "schemas" / "config-v1.schema.json").is_file()
     assert (tmp_path / "schemas" / "results-config-v1.schema.json").is_file()

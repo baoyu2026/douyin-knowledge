@@ -136,6 +136,7 @@ def _atomic_text(path: Path, content: str) -> None:
 def _copy_schemas(root: Path) -> None:
     for name in (
         "structured-content-v1.schema.json",
+        "structured-content-v2.schema.json",
         "cli-envelope-v1.schema.json",
         "config-v1.schema.json",
         "results-config-v1.schema.json",
@@ -174,6 +175,7 @@ def _init(root: Path) -> dict[str, Any]:
         root / "schemas" / name
         for name in (
             "structured-content-v1.schema.json",
+            "structured-content-v2.schema.json",
             "cli-envelope-v1.schema.json",
             "config-v1.schema.json",
             "results-config-v1.schema.json",
@@ -488,7 +490,7 @@ def _doctor(root: Path) -> dict[str, Any]:
         "cookie_valid": cookie_valid,
         "private_acl": acl_private,
         "structured_schema_present": (
-            root / "schemas" / "structured-content-v1.schema.json"
+            root / "schemas" / "structured-content-v2.schema.json"
         ).is_file(),
         "playwright_package": importlib.util.find_spec("playwright") is not None,
         "chromium_runtime": browser_runtime,

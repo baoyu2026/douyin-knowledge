@@ -30,9 +30,9 @@ def _fixture(root: Path) -> str:
     schema_source = (
         Path(__file__).resolve().parents[1]
         / "schemas"
-        / "structured-content-v1.schema.json"
+        / "structured-content-v2.schema.json"
     )
-    schema_target = root / "schemas" / "structured-content-v1.schema.json"
+    schema_target = root / "schemas" / "structured-content-v2.schema.json"
     schema_target.parent.mkdir(parents=True)
     shutil.copyfile(schema_source, schema_target)
     registry = CollectionRegistry(root / "data" / "knowledge.db", root=root)
@@ -61,7 +61,7 @@ def _fixture(root: Path) -> str:
             {
                 "analysis_version": ANALYSIS_VERSION,
                 "source": {
-                    "duration_seconds": 15.0,
+                    "duration_seconds": 1080.0,
                     "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                 },
                 "keyframes": {"items": items},
@@ -93,7 +93,7 @@ def _fixture(root: Path) -> str:
 
 def _payload() -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "title": "企业 AI 落地的确定性交付方法",
         "primary_category": "AI工程与企业服务",
         "tags": ["企业AI", "FDE", "交付方法"],
@@ -142,9 +142,39 @@ def _payload() -> dict:
             {"title": "已有参考知识", "reason": "用于对照技术能力与组织落地之间的职责边界，并复用已有交付判断框架。"}
         ],
         "visual_evidence": [
-            {"frame_index": 1, "claim": "开场画面明确给出 FDE 是否为伪命题的核心议题。"},
-            {"frame_index": 2, "claim": "讲者背景页展示需求分析、场景识别、方案设计和落地执行的职责链。"},
-            {"frame_index": 3, "claim": "问题拆解页将市场需求、岗位差异、商业价值和本地适配并列呈现。"},
+            {"frame_index": 1, "argument_step": 1, "claim": "开场画面明确给出 FDE 是否为伪命题的核心议题。"},
+            {"frame_index": 2, "argument_step": 2, "claim": "讲者背景页展示需求分析、场景识别、方案设计和落地执行的职责链。"},
+            {"frame_index": 3, "argument_step": 3, "claim": "问题拆解页将市场需求、岗位差异、商业价值和本地适配并列呈现。"},
+        ],
+        "coverage_review": [
+            {
+                "topic": "企业需求与开场动机",
+                "disposition": "covered",
+                "destination": "content_summary",
+                "evidence": "开场与完整转写都先讨论企业采用 AI 的真实需求。",
+                "reason": "用于交代讨论背景和问题范围。",
+            },
+            {
+                "topic": "FDE 的职责与差异化",
+                "disposition": "covered",
+                "destination": "argument_structure",
+                "evidence": "中段按需求、产品覆盖和交付体系展开职责边界。",
+                "reason": "属于视频的主要推理链。",
+            },
+            {
+                "topic": "知识传承案例",
+                "disposition": "covered",
+                "destination": "cases_and_data",
+                "evidence": "讲者用老员工反复培训新人说明组织成本。",
+                "reason": "作为具名业务场景单独保留。",
+            },
+            {
+                "topic": "结尾成立条件",
+                "disposition": "covered",
+                "destination": "core_points",
+                "evidence": "结尾强调体系化设计、方法论和精密交付。",
+                "reason": "属于最终结论，保留为核心判断。",
+            },
         ],
         "pending_review": [],
     }
@@ -181,6 +211,12 @@ def test_schema_fixture_enforces_enums_required_and_no_extra_fields(tmp_path: Pa
         validate_json_schema(missing, schema)
     assert required.value.code == "structured_schema_invalid"
 
+    missing_coverage = _payload()
+    del missing_coverage["coverage_review"]
+    with pytest.raises(StructuredContentError) as coverage:
+        validate_json_schema(missing_coverage, schema)
+    assert coverage.value.code == "structured_schema_invalid"
+
 
 def test_renderer_is_deterministic_and_program_resolves_paths(tmp_path: Path) -> None:
     job_id = _fixture(tmp_path)
@@ -188,11 +224,18 @@ def test_renderer_is_deterministic_and_program_resolves_paths(tmp_path: Path) ->
     second = render_structured_markdown(tmp_path, job_id, _payload())
     assert first == second
     assert hashlib.sha256(first.encode("utf-8")).hexdigest() == (
-        "1a696c91111f01894f6e82647d98dbff3b961d9dbee640b5fd420e32cc0e7568"
+        "7b519c828f54a66977717eb6eac2ae7550eb39c1c4fb03c4eff57d1f413bfa44"
     )
     assert "path: library/参考分类/已有参考知识/内容整理.md" in first
     assert "frame: frame-001.jpg" in first
+    assert "argument_step: 1" in first
     assert "frame_index" not in first
+    assert "coverage_review" not in first
+    assert "![开场画面明确给出 FDE 是否为伪命题的核心议题。](精选关键帧/frame-001.jpg)" in first
+    first_step = first.index("### 先判断企业 AI 落地需求是否真实且足够具体。")
+    second_step = first.index("### 再判断通用模型和标准产品是否已经覆盖主要问题。")
+    first_frame = first.index("精选关键帧/frame-001.jpg")
+    assert first_step < first_frame < second_step
     assert "## 时间轴" in first
     assert "## 待复核项" in first
     output = tmp_path / "orchestration" / "content-drafts" / f"{job_id}-content.md"
@@ -223,6 +266,61 @@ def test_privacy_and_semantic_quality_fail_without_retry(tmp_path: Path) -> None
     with pytest.raises(StructuredContentError) as category:
         validate_structured_payload(tmp_path, job_id, generic)
     assert category.value.code == "structured_category_invalid"
+
+    duplicate = _payload()
+    duplicate["reusable_knowledge"][0] = duplicate["core_points"][0]
+    with pytest.raises(StructuredContentError) as repeated:
+        validate_structured_payload(tmp_path, job_id, duplicate)
+    assert repeated.value.code == "structured_content_duplicate"
+
+    misplaced = _payload()
+    misplaced["visual_evidence"][0]["argument_step"] = 9
+    with pytest.raises(StructuredContentError) as placement:
+        validate_structured_payload(tmp_path, job_id, misplaced)
+    assert placement.value.code == "structured_visual_evidence_invalid"
+
+    partial = _payload()
+    del partial["visual_evidence"][0]["argument_step"]
+    with pytest.raises(StructuredContentError) as incomplete_placement:
+        validate_structured_payload(tmp_path, job_id, partial)
+    assert incomplete_placement.value.code == "structured_schema_invalid"
+
+    incomplete_timeline = _payload()
+    incomplete_timeline["timeline_interpretation"][-1]["timestamp"] = "06:00"
+    with pytest.raises(StructuredContentError) as timeline:
+        validate_structured_payload(tmp_path, job_id, incomplete_timeline)
+    assert timeline.value.code == "structured_timeline_coverage_invalid"
+
+    duplicate_topic = _payload()
+    duplicate_topic["coverage_review"][1]["topic"] = "  企业需求与开场动机  "
+    with pytest.raises(StructuredContentError) as coverage:
+        validate_structured_payload(tmp_path, job_id, duplicate_topic)
+    assert coverage.value.code == "structured_coverage_review_invalid"
+
+    invalid_disposition = _payload()
+    invalid_disposition["coverage_review"][0]["destination"] = "not_published"
+    with pytest.raises(StructuredContentError) as disposition:
+        validate_structured_payload(tmp_path, job_id, invalid_disposition)
+    assert disposition.value.code == "structured_coverage_review_invalid"
+
+    unresolved_coverage = _payload()
+    unresolved_coverage["coverage_review"][0]["disposition"] = "unresolved"
+    unresolved_coverage["coverage_review"][0]["destination"] = "not_published"
+    with pytest.raises(StructuredContentError) as unresolved:
+        validate_structured_payload(tmp_path, job_id, unresolved_coverage)
+    assert unresolved.value.code == "structured_pending_review_invalid"
+
+
+def test_prompt_assigns_non_overlapping_roles_and_complete_coverage(tmp_path: Path) -> None:
+    job_id = _fixture(tmp_path)
+    prompt, _frames, _catalog = build_structured_prompt(tmp_path, job_id)
+
+    assert "不得在多个章节换句话重复同一结论" in prompt
+    assert "开场动机" in prompt
+    assert "具名案例" in prompt
+    assert "有证据支持的基准数字" in prompt
+    assert "开头、中段和结尾" in prompt
+    assert "argument_step" in prompt
 
 
 def test_split_generate_validate_render_pipeline(
@@ -259,7 +357,7 @@ def test_split_generate_validate_render_pipeline(
     assert generated.runner_calls == 1
     assert raw.is_file() and generated.manifest_path.is_file()
     assert not draft.exists()
-    assert validate_structured_json_artifact(tmp_path, job_id, raw)["schema_version"] == 1
+    assert validate_structured_json_artifact(tmp_path, job_id, raw)["schema_version"] == 2
     rendered = render_structured_json_artifact(tmp_path, job_id, raw, draft)
     assert rendered.path == draft and draft.is_file()
     assert generate_structured_json(tmp_path, job_id, config, raw).reused_json is True

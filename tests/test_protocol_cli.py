@@ -97,12 +97,15 @@ def test_packet_export_is_bounded_safe_and_self_describing(
     assert visual_schema["minItems"] == 3
     assert visual_schema["maxItems"] == 8
     assert visual_schema["items"]["properties"]["frame_index"]["maximum"] == 40
+    assert "argument_step" in visual_schema["items"]["properties"]
     assert str(tmp_path).casefold() not in "\n".join(all_strings(payload)).casefold()
     instructions = instructions_path.read_text(encoding="utf-8")
     assert "Read every evidence chunk" in instructions
     assert "Inspect every listed visual file" in instructions
     assert "select only 3 to 8" in instructions
     assert "cannot read images" in instructions
+    assert "complete coverage inventory" in instructions
+    assert "argument_step" in instructions
 
 
 def test_candidate_import_validates_provenance_and_stages_content(
@@ -120,7 +123,7 @@ def test_candidate_import_validates_provenance_and_stages_content(
                 "content": _payload(),
                 "packet_sha256": data["packet_sha256"],
                 "job_ref": job_ref,
-                "schema_version": 1,
+                "schema_version": 2,
                 "protocol_version": 1,
             },
             ensure_ascii=False,
@@ -164,7 +167,7 @@ def test_candidate_import_from_official_output_reports_first_use_and_file_hash(
         json.dumps(
             {
                 "protocol_version": 1,
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_ref": job_ref,
                 "packet_sha256": exported["data"]["packet_sha256"],
                 "content": _payload(),
@@ -209,7 +212,7 @@ def test_candidate_import_replaces_objectively_stale_packet_without_reject(
         json.dumps(
             {
                 "protocol_version": 1,
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_ref": job_ref,
                 "packet_sha256": first_export["packet_sha256"],
                 "content": _payload(),
@@ -243,7 +246,7 @@ def test_candidate_import_replaces_objectively_stale_packet_without_reject(
         json.dumps(
             {
                 "protocol_version": 1,
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_ref": job_ref,
                 "packet_sha256": second_export["packet_sha256"],
                 "content": replacement,
@@ -296,7 +299,7 @@ def test_candidate_import_same_packet_replacement_still_requires_reject(
             json.dumps(
                 {
                     "protocol_version": 1,
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "job_ref": job_ref,
                     "packet_sha256": exported["packet_sha256"],
                     "content": content,
@@ -343,7 +346,7 @@ def test_candidate_import_rejects_packet_hash_mismatch(
         json.dumps(
             {
                 "protocol_version": 1,
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_ref": job_ref,
                 "packet_sha256": "0" * 64,
                 "content": _payload(),
@@ -402,7 +405,7 @@ def test_rendering_rejection_produces_bounded_repair_contract(
         json.dumps(
             {
                 "protocol_version": 1,
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_ref": job_ref,
                 "packet_sha256": exported["packet_sha256"],
                 "content": _payload(),
@@ -476,7 +479,7 @@ def test_non_content_rejection_requires_prerequisite_fix_not_candidate_repair(
         json.dumps(
             {
                 "protocol_version": 1,
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_ref": job_ref,
                 "packet_sha256": exported["packet_sha256"],
                 "content": _payload(),
@@ -541,7 +544,7 @@ def test_repair_contract_diagnoses_legacy_render_failure_without_rewriting_histo
     )
     candidate = {
         "protocol_version": 1,
-        "schema_version": 1,
+        "schema_version": 2,
         "job_ref": job_ref,
         "packet_sha256": exported["packet_sha256"],
         "content": _payload(),
@@ -600,7 +603,7 @@ def test_first_item_can_stage_without_existing_related_knowledge(
         json.dumps(
             {
                 "protocol_version": 1,
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_ref": job_ref,
                 "packet_sha256": exported["data"]["packet_sha256"],
                 "content": content,
@@ -666,7 +669,7 @@ def test_run_staging_reuses_imported_candidate_without_model_call(
         json.dumps(
             {
                 "protocol_version": 1,
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_ref": job_ref,
                 "packet_sha256": exported["packet_sha256"],
                 "content": _payload(),

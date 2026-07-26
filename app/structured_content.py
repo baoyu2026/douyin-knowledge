@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,8 +31,8 @@ from app.keyframe_selection import resolve_keyframes
 from app.security import GateError, harden_private_project_directory
 from douyin_knowledge.result_archive import logical_library_handle, results_root
 
-STRUCTURED_SCHEMA_VERSION = 1
-STRUCTURED_SCHEMA_RELATIVE = Path("schemas/structured-content-v1.schema.json")
+STRUCTURED_SCHEMA_VERSION = 2
+STRUCTURED_SCHEMA_RELATIVE = Path("schemas/structured-content-v2.schema.json")
 RETRIABLE_CODES = frozenset(
     {
         "structured_runner_failed",
@@ -301,6 +302,11 @@ def build_structured_prompt(root: Path, job_id: str) -> tuple[str, list[Path], d
 - related_knowledge.title 只能从给定标题清单选择；不要输出路径，程序会确定性解析链接。
 - visual_evidence.frame_index 只能使用给定关键帧序号；不要输出文件名或路径，程序会确定性解析附件。
 - timeline_interpretation 使用视频内时间，视频时长约 {duration:.1f} 秒。
+- 各字段职责必须互不重叠：content_summary 只交代开场动机、讨论范围和最终结论；core_points 只列不展开的关键判断；argument_structure 负责逐步给出论点与证据；cases_and_data 只保留具名案例、演示和有证据支持的基准数字；reusable_knowledge 提炼可迁移方法；action_items 写成可执行检查项。不得在多个章节换句话重复同一结论。
+- 生成前先逐段核对完整证据，确保覆盖开场动机、每个主要时间区间、具名案例或演示、有证据支持的基准数字以及结尾结论。timeline_interpretation 必须覆盖开头、中段和结尾；证据中确实不存在的案例或数字不要编造。
+- visual_evidence.argument_step 必须指向 argument_structure 中真实存在的 step，并选择最能直接支持该论点的关键帧。默认精选 3 至 5 张；只有存在更多彼此不同且不可替代的画面证据时才可增加到 8 张。
+- coverage_review 必须先盘点完整证据中的主要主题，再逐项记录 covered、intentionally_omitted 或 unresolved；它是内部审计账本，不要把它复制进可发布正文。清晰、中心性的数字不得为了使用 not_applicable 而从正文中删掉。
+- action_items 应尽量包含检查对象、观测指标、验证方式、通过条件和风险信号；证据没有给出阈值时明确由使用者填写，禁止编造。
 - 禁止输出 URL、Cookie、签名、请求信息、作品 ID、JobId 或内部路径。
 - 不要为了迎合 Schema 编造数字。没有数字时，numeric_review 使用一条 not_applicable 说明。
 
@@ -401,7 +407,7 @@ def _resolve_payload(
     payload: dict[str, Any],
     catalog: dict[str, Path],
     frames: list[Path],
-) -> tuple[dict[str, Any], list[dict[str, str]], list[dict[str, str]]]:
+) -> tuple[dict[str, Any], list[dict[str, str]], list[dict[str, Any]]]:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     if any(pattern.search(encoded) for pattern in SENSITIVE_PATTERNS):
         raise StructuredContentError("structured_privacy_rejected", "结构化响应包含禁止字段")
@@ -414,12 +420,17 @@ def _resolve_payload(
     noun_rows = payload["proper_noun_review"]
     number_rows = payload["numeric_review"]
     pending = payload["pending_review"]
+    coverage = payload.get("coverage_review") or []
+    _validate_coverage_review(coverage)
     unresolved = any(row["verdict"] == "unresolved" for row in [*noun_rows, *number_rows])
+    unresolved = unresolved or any(row["disposition"] == "unresolved" for row in coverage)
     if unresolved != bool(pending):
         raise StructuredContentError("structured_pending_review_invalid", "未决事实与待复核项不一致")
     expected_status = "needs_review" if pending else "verified"
     if payload["review_status"] != expected_status:
         raise StructuredContentError("structured_review_status_invalid", "复核状态与待复核项不一致")
+    _validate_content_distinctness(payload)
+    _validate_timeline_coverage(root, job_id, payload["timeline_interpretation"])
     related: list[dict[str, str]] = []
     for item in payload["related_knowledge"]:
         title = _single_line(item["title"])
@@ -432,19 +443,127 @@ def _resolve_payload(
                 "reason": _single_line(item["reason"]),
             }
         )
-    visual: list[dict[str, str]] = []
+    argument_steps = {int(item["step"]) for item in payload["argument_structure"]}
+    visual: list[dict[str, Any]] = []
     observed_indices: set[int] = set()
+    placement_flags = [item.get("argument_step") is not None for item in payload["visual_evidence"]]
+    if any(placement_flags) and not all(placement_flags):
+        raise StructuredContentError(
+            "structured_visual_evidence_invalid",
+            "关键帧正文位置必须全部提供或全部省略",
+        )
     for item in payload["visual_evidence"]:
         index = int(item["frame_index"])
-        if index in observed_indices or index < 1 or index > len(frames):
+        argument_step = int(item["argument_step"]) if item.get("argument_step") is not None else None
+        if (
+            index in observed_indices
+            or index < 1
+            or index > len(frames)
+            or (argument_step is not None and argument_step not in argument_steps)
+        ):
             raise StructuredContentError("structured_visual_evidence_invalid", "关键帧序号无效或重复")
         observed_indices.add(index)
-        visual.append({"frame": frames[index - 1].name, "claim": _single_line(item["claim"])})
+        resolved = {"frame": frames[index - 1].name, "claim": _single_line(item["claim"])}
+        if argument_step is not None:
+            resolved["argument_step"] = argument_step
+        visual.append(resolved)
     return payload, related, visual
+
+
+def _normalized_similarity_text(value: object) -> str:
+    normalized = unicodedata.normalize("NFKC", _single_line(value)).casefold()
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", normalized)
+
+
+def _validate_coverage_review(rows: list[dict[str, Any]]) -> None:
+    topics: set[str] = set()
+    for item in rows:
+        topic = _normalized_similarity_text(item.get("topic"))
+        if not topic or topic in topics:
+            raise StructuredContentError(
+                "structured_coverage_review_invalid",
+                "覆盖审计包含空主题或重复主题",
+            )
+        topics.add(topic)
+        disposition = item.get("disposition")
+        destination = item.get("destination")
+        if (disposition == "covered") != (destination != "not_published"):
+            raise StructuredContentError(
+                "structured_coverage_review_invalid",
+                "覆盖审计的处理结论与正文落位不一致",
+            )
+
+
+def _validate_content_distinctness(payload: dict[str, Any]) -> None:
+    units: list[tuple[str, str]] = []
+    for field in ("content_summary", "core_points", "reusable_knowledge", "action_items"):
+        units.extend((field, _single_line(value)) for value in payload[field])
+    for field in ("argument_structure", "cases_and_data"):
+        units.extend((field, _single_line(item["claim"])) for item in payload[field])
+
+    normalized = [(_field, text, _normalized_similarity_text(text)) for _field, text in units]
+    observed: dict[str, str] = {}
+    for field, _text, value in normalized:
+        if len(value) < 16:
+            continue
+        if value in observed:
+            raise StructuredContentError(
+                "structured_content_duplicate",
+                "结构化正文包含标准化后完全重复的内容",
+            )
+        observed[value] = field
+
+
+def _timecode_seconds(value: str) -> int:
+    parts = [int(part) for part in value.split(":")]
+    if len(parts) == 2:
+        return parts[0] * 60 + parts[1]
+    return parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
+def _validate_timeline_coverage(root: Path, job_id: str, rows: list[dict[str, Any]]) -> None:
+    manifest = _load_json(
+        root / "data" / "jobs" / job_id / "analysis" / "manifest.json",
+        "structured_input_invalid",
+    )
+    source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+    duration = source.get("duration_seconds")
+    if not isinstance(duration, (int, float)) or duration <= 0:
+        return
+    points = sorted(_timecode_seconds(_single_line(row["timestamp"])) for row in rows)
+    has_opening = points[0] <= max(30.0, duration * 0.15)
+    has_middle = any(duration * 0.2 <= point <= duration * 0.8 for point in points)
+    has_closing = points[-1] >= duration * 0.8
+    if not (has_opening and has_middle and has_closing):
+        raise StructuredContentError(
+            "structured_timeline_coverage_invalid",
+            "时间轴必须覆盖视频开头、中段和结尾",
+        )
 
 
 def _bullets(values: list[str]) -> str:
     return "\n".join(f"- {value}" for value in values)
+
+
+def _argument_markdown(
+    arguments: list[dict[str, Any]], visual: list[dict[str, Any]]
+) -> str:
+    by_step: dict[int, list[dict[str, Any]]] = {}
+    for item in visual:
+        if item.get("argument_step") is not None:
+            by_step.setdefault(int(item["argument_step"]), []).append(item)
+    blocks = []
+    for item in arguments:
+        step = int(item["step"])
+        block = (
+            f"### {_single_line(item['claim'])}\n\n"
+            f"**证据**：{_single_line(item['evidence'])}"
+        )
+        for frame in by_step.get(step, []):
+            claim = _single_line(frame["claim"])
+            block += f"\n\n![{claim}](精选关键帧/{frame['frame']})\n\n*画面说明：{claim}*"
+        blocks.append(block)
+    return "\n\n".join(blocks)
 
 
 def render_structured_markdown(
@@ -462,7 +581,7 @@ def render_structured_markdown(
         frames = selected
     payload, related, visual = _resolve_payload(root, job_id, payload, catalog, frames)
     metadata: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": int(payload["schema_version"]),
         "title": _single_line(payload["title"]),
         "primary_category": _single_line(payload["primary_category"]),
         "tags": [_single_line(value) for value in payload["tags"]],
@@ -481,10 +600,7 @@ def render_structured_markdown(
         ("核心观点", _bullets([_single_line(value) for value in payload["core_points"]])),
         (
             "论证结构",
-            "\n".join(
-                f"- **论点**：{_single_line(item['claim'])}\n  - **证据**：{_single_line(item['evidence'])}"
-                for item in payload["argument_structure"]
-            ),
+            _argument_markdown(payload["argument_structure"], visual),
         ),
         (
             "关键案例与数据",
@@ -526,7 +642,15 @@ def render_structured_markdown(
         ),
         (
             "画面证据",
-            "\n".join(f"- **{item['frame']}**：{item['claim']}" for item in visual),
+            (
+                "关键画面已嵌入对应论证步骤。索引如下：\n\n"
+                + "\n".join(
+                    f"- **论证步骤 {item['argument_step']} / {item['frame']}**：{item['claim']}"
+                    for item in visual
+                )
+                if all(item.get("argument_step") is not None for item in visual)
+                else "\n".join(f"- **{item['frame']}**：{item['claim']}" for item in visual)
+            ),
         ),
         (
             "待复核项",

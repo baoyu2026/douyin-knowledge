@@ -26,7 +26,8 @@ from douyin_knowledge.result_archive import (
     results_root,
 )
 
-CONTENT_SCHEMA_VERSION = 1
+CONTENT_SCHEMA_VERSION = 2
+SUPPORTED_CONTENT_SCHEMA_VERSIONS = {1, CONTENT_SCHEMA_VERSION}
 REQUIRED_SECTIONS = (
     "基本信息",
     "一句话总结",
@@ -263,7 +264,7 @@ def validate_content_draft(root: Path, job_id: str, path: Path) -> ValidatedDraf
     if any(pattern.search(document) for pattern in SENSITIVE_PATTERNS):
         raise ContentStageError("content_privacy_rejected", "内容稿包含禁止发布的隐私字段")
     metadata, body = _front_matter(document)
-    if metadata.get("schema_version") != CONTENT_SCHEMA_VERSION:
+    if metadata.get("schema_version") not in SUPPORTED_CONTENT_SCHEMA_VERSIONS:
         raise ContentStageError("content_schema_invalid", "内容稿版本不受支持")
     title = _required_text(metadata, "title")
     category = _required_text(metadata, "primary_category")

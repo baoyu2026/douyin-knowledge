@@ -33,7 +33,7 @@ def _write_candidate(root: Path, job_ref: str, packet_hash: str, *, title: str) 
         json.dumps(
             {
                 "protocol_version": 1,
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_ref": job_ref,
                 "packet_sha256": packet_hash,
                 "content": payload,

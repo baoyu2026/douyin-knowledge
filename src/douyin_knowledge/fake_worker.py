@@ -43,10 +43,13 @@ def run_fake_worker(
     ]
     if required != expected or not isinstance(packet.get("job_ref"), str):
         raise FakeWorkerError("unsupported protocol schema")
+    schema_version = schema.get("properties", {}).get("schema_version", {}).get("const")
+    if not isinstance(schema_version, int):
+        raise FakeWorkerError("unsupported content schema")
     packet_hash = hashlib.sha256(packet_path.read_bytes()).hexdigest()
     candidate = {
         "protocol_version": 1,
-        "schema_version": 1,
+        "schema_version": schema_version,
         "job_ref": packet["job_ref"],
         "packet_sha256": packet_hash,
         "content": content,

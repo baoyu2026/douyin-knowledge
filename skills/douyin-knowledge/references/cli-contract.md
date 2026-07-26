@@ -132,7 +132,9 @@ the lease stale; keep monitoring or ask before a newly confirmed retry. Use
 `visual_handles` (currently at most 40). The evidence manifest reports the complete
 visual count and requires the worker to inspect every handle. This full input does not
 change the candidate or publication limit: `visual_evidence` selects 3 to 8 conclusions,
-and only those referenced frames are copied to the results archive and Obsidian.
+and only those referenced frames are copied to the results archive and Obsidian. New
+candidates map every selected frame to an argument step so the image is embedded beside the
+claim it supports; legacy candidates without placement retain the compact gallery fallback.
 
 ## Scoped Authorization
 

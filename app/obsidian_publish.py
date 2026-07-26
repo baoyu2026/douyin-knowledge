@@ -199,6 +199,18 @@ def _generated_body(
         f"[[{timeline_link}|完整时间轴]]",
         body,
     )
+    frame_by_name = {Path(link).name: link for link in frame_links}
+
+    def replace_frame(match: re.Match[str]) -> str:
+        label = match.group("label").replace("|", "-")
+        link = frame_by_name.get(match.group("name"))
+        return f"![[{link}|{label}]]" if link else match.group(0)
+
+    body, embedded_count = re.subn(
+        r"!\[(?P<label>[^\]\n]+)\]\(精选关键帧/(?P<name>[^/)\n]+)\)",
+        replace_frame,
+        body,
+    )
     frame_block = "## 精选关键帧\n\n" + "\n\n".join(f"![[{link}]]" for link in frame_links)
     timeline_heading = re.search(r"^## (?:完整)?时间轴\s*$", body, flags=re.MULTILINE)
     if timeline_heading:
@@ -217,27 +229,47 @@ def _generated_body(
                 + f"\n\n详细逐段记录见 {timeline_link_markup}。\n\n"
                 + body[timeline_end:].lstrip()
             )
-        body = (
-            body[: timeline_heading.start()]
-            + frame_block
-            + "\n\n"
-            + body[timeline_heading.start() :]
-        )
+        if embedded_count == 0:
+            body = (
+                body[: timeline_heading.start()]
+                + frame_block
+                + "\n\n"
+                + body[timeline_heading.start() :]
+            )
     else:
-        body += "\n\n" + frame_block + "\n\n## 完整时间轴\n\n"
+        if embedded_count == 0:
+            body += "\n\n" + frame_block
+        body += "\n\n## 完整时间轴\n\n"
         body += f"详细逐段记录见 [[{timeline_link}|完整时间轴]]。"
     return body.strip()
 
 
 def _raw_video_target(document: str) -> Path | None:
-    match = re.search(r"\(file:///([^\s)]+)\)", document)
+    match = re.search(
+        r"\[在本机打开原视频\]\((?:<)?(file:///[^)>\n]+)(?:>)?\)",
+        document,
+    )
     if not match:
         return None
-    parsed = urlparse("file:///" + match.group(1))
+    parsed = urlparse(match.group(1))
     value = unquote(parsed.path)
     if re.match(r"^/[A-Za-z]:/", value):
         value = value[1:]
     return Path(value)
+
+
+def _refresh_raw_video_link(document: str, source_video: Path) -> str:
+    line = f"- [在本机打开原视频]({source_video.resolve().as_uri()})"
+    pattern = r"(?m)^- \[在本机打开原视频\]\([^\n]+\)$"
+    matches = list(re.finditer(pattern, document))
+    if len(matches) > 1:
+        raise PublicationError("obsidian_video_link_duplicate", "原视频链接存在重复受管条目")
+    if matches:
+        return re.sub(pattern, lambda _match: line, document, count=1)
+    heading = re.search(r"(?m)^## 原始资料\s*$", document)
+    if heading:
+        return document[: heading.end()] + "\n\n" + line + document[heading.end() :]
+    return document.rstrip() + "\n\n## 原始资料\n\n" + line + "\n"
 
 
 def _validate_unmapped_existing(note: Path, source_video: Path, media_hash: str) -> None:
@@ -380,7 +412,7 @@ def publish_to_obsidian(
         "favorite_state": "active" if item["currently_collected"] else "uncollected",
         "processed_at": processed_at,
         "uploaded_at": uploaded_at,
-        "content_version": 2,
+        "content_version": 3,
         "cover": f"[[{frame_links[0]}]]",
         "related_notes": related_notes,
         "tags": ["来源/抖音收藏", f"领域/{category}"]
@@ -408,6 +440,10 @@ def publish_to_obsidian(
             + source_video.as_uri()
             + ")\n- 原始技术产物保留在项目目录，不进入 Obsidian Sync。\n"
         )
+    rendered = _refresh_raw_video_link(rendered, source_video)
+    linked_video = _raw_video_target(rendered)
+    if linked_video != source_video.resolve() or not linked_video.is_file():
+        raise PublicationError("obsidian_video_link_invalid", "原视频链接未指向当前发布产物")
     if "\\n" in rendered:
         raise PublicationError("obsidian_literal_newline", "生成笔记包含字面换行转义")
     atomic_write_text(note, rendered.rstrip() + "\n")

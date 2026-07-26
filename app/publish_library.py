@@ -465,7 +465,7 @@ def _verify_library_publication(
 def _verify_obsidian_publication(root: Path, vault: Path, job_id: str) -> None:
     with sqlite3.connect(root / "data" / "knowledge.db") as connection:
         row = connection.execute(
-            "SELECT publication.note_path, publication.attachment_path "
+            "SELECT publication.note_path, publication.attachment_path, item.library_path "
             "FROM obsidian_publications AS publication "
             "JOIN collection_items AS item USING(source_id) WHERE item.job_id = ?",
             (job_id,),
@@ -474,6 +474,7 @@ def _verify_obsidian_publication(root: Path, vault: Path, job_id: str) -> None:
         raise PublicationError("obsidian_registry_missing", "Obsidian 发布登记缺失")
     note = (vault / row[0]).resolve()
     attachments = (vault / row[1]).resolve()
+    library_entry = Path(row[2]).resolve() if row[2] else None
     try:
         note.relative_to(vault.resolve())
         attachments.relative_to(vault.resolve())
@@ -494,6 +495,16 @@ def _verify_obsidian_publication(root: Path, vault: Path, job_id: str) -> None:
         and (attachments / "完整时间轴.md").is_file()
         and 3 <= len(frames) <= 8
     )
+    if complete and library_entry is not None:
+        from app.obsidian_publish import _raw_video_target
+
+        expected_video = (library_entry / "原视频.mp4").resolve()
+        linked_video = _raw_video_target(note.read_text(encoding="utf-8"))
+        complete = bool(
+            linked_video == expected_video
+            and linked_video.is_file()
+            and sha256_file(linked_video) == sha256_file(expected_video)
+        )
     if not complete:
         raise PublicationError("obsidian_verification_failed", "Obsidian 发布后验收失败")
 

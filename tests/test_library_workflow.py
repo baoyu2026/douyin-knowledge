@@ -11,7 +11,7 @@ import pytest
 from app.analyze_video import AnalysisError, resolve_job_paths
 from app.collection_registry import begin_snapshot, complete_snapshot, ingest_snapshot_page
 from app.migrate_library import MigrationError, build_plan
-from app.obsidian_publish import _generated_body
+from app.obsidian_publish import _generated_body, _raw_video_target, _refresh_raw_video_link
 from app.probe_one import (
     CollectResult,
     FetchResult,
@@ -385,6 +385,11 @@ def test_obsidian_low_quality_publish_preserves_annotations_without_completion(
     assert first_uploaded_at.isoformat() == first_published_at
     document = re.sub(r"^uploaded_at:.*\n", "", document, count=1, flags=re.MULTILINE)
     document = document.replace("这里的内容不会被自动更新覆盖。", "我的人工判断：保持不变。")
+    document = re.sub(
+        r"(?m)^- \[在本机打开原视频\]\([^\n]+\)$",
+        f"- [在本机打开原视频]({(tmp_path / 'stale.mp4').as_uri()})",
+        document,
+    )
     note.write_text(document, encoding="utf-8")
     attachment_dir = vault / "99-Attachments" / "抖音收藏" / "幂等发布：样板"
     (attachment_dir / "frame-999.jpg").write_bytes(b"stale managed frame")
@@ -411,6 +416,8 @@ def test_obsidian_low_quality_publish_preserves_annotations_without_completion(
     assert not (attachment_dir / "frame-999.jpg").exists()
     assert (attachment_dir / "my-note.jpg").read_bytes() == b"unmanaged user attachment"
     assert (attachment_dir / "完整时间轴.md").is_file()
+    source_video = tmp_path / "library" / "软件工程" / "幂等发布-样板" / "原视频.mp4"
+    assert _raw_video_target(repeated) == source_video.resolve()
     assert (
         "[[99-Attachments/抖音收藏/幂等发布：样板/完整时间轴|完整时间轴]]"
         in repeated
@@ -451,6 +458,49 @@ def test_existing_timeline_section_gets_one_vault_link() -> None:
     assert second == first
     timeline_section = first.split("## 时间轴", 1)[1].split("## 可复用知识", 1)[0]
     assert expected in timeline_section
+
+
+def test_generated_body_embeds_frames_beside_their_argument_without_gallery() -> None:
+    library_body = (
+        "## 论证结构\n\n"
+        "### 1. 第一个论点\n\n"
+        "**证据**：第一条证据。\n\n"
+        "![第一张图](精选关键帧/frame-001.jpg)\n\n"
+        "### 2. 第二个论点\n\n"
+        "**证据**：第二条证据。\n\n"
+        "![第二张图](精选关键帧/frame-002.jpg)\n\n"
+        "## 时间轴\n\n00:00 开始。"
+    )
+    generated = _generated_body(
+        library_body,
+        frame_links=[
+            "99-Attachments/抖音收藏/样板/frame-001.jpg",
+            "99-Attachments/抖音收藏/样板/frame-002.jpg",
+        ],
+        timeline_link="99-Attachments/抖音收藏/样板/完整时间轴",
+    )
+
+    assert "![[99-Attachments/抖音收藏/样板/frame-001.jpg|第一张图]]" in generated
+    assert "![[99-Attachments/抖音收藏/样板/frame-002.jpg|第二张图]]" in generated
+    assert "## 精选关键帧" not in generated
+
+
+def test_raw_video_link_refresh_rejects_duplicate_managed_links(tmp_path: Path) -> None:
+    source = tmp_path / "中文 #100% (样片).mp4"
+    source.write_bytes(b"video")
+    stale = (tmp_path / "stale.mp4").as_uri()
+    document = (
+        "## 原始资料\n\n"
+        f"- [在本机打开原视频]({stale})\n"
+        f"- [在本机打开原视频]({stale})\n"
+    )
+
+    with pytest.raises(PublicationError) as duplicate:
+        _refresh_raw_video_link(document, source)
+    assert duplicate.value.code == "obsidian_video_link_duplicate"
+
+    refreshed = _refresh_raw_video_link("## 原始资料\n", source)
+    assert _raw_video_target(refreshed) == source.resolve()
 
 
 def test_obsidian_failure_does_not_mark_registry_completed(tmp_path: Path) -> None:

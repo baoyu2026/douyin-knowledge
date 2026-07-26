@@ -13,6 +13,7 @@ from app.analyze_video import JOB_ID_PATTERN
 from app.content_packet import ContentPacketError, build_content_packet
 from app.evidence_bundle import EvidenceBundleError, build_evidence_bundle
 from app.structured_content import (
+    STRUCTURED_SCHEMA_VERSION,
     StructuredContentError,
     _analysis_inputs,
     _effective_schema,
@@ -40,6 +41,9 @@ REPAIRABLE_CONTENT_ERRORS = frozenset(
         "structured_review_status_invalid",
         "structured_related_invalid",
         "structured_visual_evidence_invalid",
+        "structured_content_duplicate",
+        "structured_timeline_coverage_invalid",
+        "structured_coverage_review_invalid",
         "content_privacy_rejected",
         "content_category_invalid",
         "content_tags_invalid",
@@ -68,7 +72,12 @@ CONTENT_REPAIR_INVARIANTS = (
     "analysis quality flags that require review are reflected consistently in review fields",
     "every publishable number is registered in numeric_review with evidence and a verdict",
     "every related_knowledge title resolves uniquely within the supplied catalog",
-    "visual_evidence contains 3 to 8 unique in-range frame indexes",
+    "visual_evidence contains 3 to 8 unique in-range frame indexes and either every row "
+    "maps to a valid argument step or every legacy row omits placement",
+    "publishable sections have distinct roles and do not repeat the same conclusion",
+    "timeline_interpretation covers the opening, middle, and closing regions",
+    "opening motivation, major topics, named demonstrations, supported benchmark numbers, "
+    "and the closing takeaway are covered when present in the evidence",
     "privacy-triggering values and unsupported facts remain excluded",
 )
 
@@ -124,7 +133,7 @@ def _candidate_schema(content_schema: dict[str, Any]) -> dict[str, Any]:
         "required": list(CANDIDATE_FIELDS),
         "properties": {
             "protocol_version": {"const": PROTOCOL_VERSION},
-            "schema_version": {"const": 1},
+            "schema_version": {"const": STRUCTURED_SCHEMA_VERSION},
             "job_ref": {"type": "string", "pattern": JOB_ID_PATTERN.pattern},
             "packet_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
             "content": copy.deepcopy(content_schema),
@@ -188,6 +197,14 @@ def export_packet(root: Path, job_ref: str) -> dict[str, Any]:
         "number used anywhere in publishable content in numeric_review; if there are no "
         "numbers, use one not_applicable row. Keep unresolved verdicts, pending_review, and "
         "review_status mutually consistent.\n"
+        "Give every visual_evidence row an argument_step that points to an existing "
+        "argument_structure step and directly supports that argument. Before writing, build "
+        "a complete coverage inventory across the opening, every major timeline region, "
+        "named demonstrations, supported benchmark numbers, and the closing takeaway. Keep "
+        "content_summary, core_points, argument_structure, cases_and_data, "
+        "reusable_knowledge, and action_items non-overlapping; do not paraphrase the same "
+        "claim across sections. timeline_interpretation must cover the opening, middle, and "
+        "closing regions.\n"
         "Exclude privacy-triggering content including URLs, cookies, signatures, request "
         "metadata, raw platform IDs, JobId values, and absolute or internal paths.\n"
         "Do not output Markdown fences, commentary, paths, URLs, credentials, or raw IDs.\n"
@@ -404,7 +421,7 @@ def import_candidate(root: Path, job_ref: str, supplied: Path) -> dict[str, Any]
                 "candidate protocol version does not match",
                 "regenerate the candidate from the current packet",
             )
-        if candidate.get("schema_version") != 1:
+        if candidate.get("schema_version") != STRUCTURED_SCHEMA_VERSION:
             raise CliError(
                 "candidate_schema_version_mismatch",
                 "candidate schema version does not match",

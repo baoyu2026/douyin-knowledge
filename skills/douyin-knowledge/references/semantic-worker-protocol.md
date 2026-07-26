@@ -36,7 +36,20 @@ fabricate or generate `visual_evidence`.
 
 The visual inventory is complete input, not the publication selection. Use its stable
 `frame_index` mapping to choose 3 to 8 supported conclusions for the candidate's
-`visual_evidence`; the results archive and Obsidian publish only those referenced frames.
+`visual_evidence`; use 3 to 5 by default and increase toward 8 only for distinct,
+irreplaceable evidence. Every new `visual_evidence` row must set `argument_step` to an
+existing `argument_structure.step` that the inspected frame directly supports. The results
+archive and Obsidian publish only those referenced frames and embed them beside that argument.
+
+Before drafting, build an internal coverage inventory from the complete ordered evidence.
+It must account for the opening motivation, every major timeline region, named demonstrations
+or examples, supported benchmark numbers, and the closing takeaway when those are present.
+`timeline_interpretation` must include the opening, middle, and closing regions. Give each
+publishable field a separate job: `content_summary` provides context and scope,
+`core_points` is a compact index of judgments, `argument_structure` carries the reasoning and
+evidence, `cases_and_data` carries named demonstrations and supported benchmarks,
+`reusable_knowledge` generalizes methods, and `action_items` gives concrete checks. Do not
+paraphrase the same claim across several fields merely to fill the schema.
 
 Read no other job, database, Cookie, log, results archive, or orchestration file. Do not use
 network retrieval to enrich the evidence.
@@ -60,6 +73,8 @@ Before writing the candidate:
 - Register every number that appears anywhere in publishable content in
   `numeric_review`, with evidence and a verdict. When the content contains no
   numbers, use exactly one `not_applicable` row rather than inventing a number.
+- Cover supported benchmark numbers and named demonstrations found in the evidence; do not
+  omit them for brevity and do not invent them when the evidence contains none.
 - Keep uncertainty consistent: every `unresolved` noun or number must have a
   corresponding `pending_review` item, and any pending item requires
   `review_status=needs_review`; otherwise use `review_status=verified`.
