@@ -436,6 +436,7 @@ def test_rendering_rejection_produces_bounded_repair_contract(
     )
     assert code == 2
     assert rejected["error"]["code"] == "content_numbers_unreviewed"
+    assert rejected["error"]["retryable"] is True
 
     code, repair = invoke(
         [
@@ -452,6 +453,80 @@ def test_rendering_rejection_produces_bounded_repair_contract(
     assert code == 0
     assert repair["data"]["error_code"] == "content_numbers_unreviewed"
     assert repair["data"]["repairable"] is True
+    contract = json.loads(
+        (tmp_path / repair["data"]["contract_handle"]).read_text(encoding="utf-8")
+    )
+    assert contract["max_repair_attempts"] == 1
+    invariants = " ".join(contract["required_content_invariants"])
+    assert "primary_category" in invariants
+    assert "related_knowledge" in invariants
+    assert "publishable section" in invariants
+    assert "revalidate every required content invariant" in contract["repair_instruction"]
+
+
+def test_non_content_rejection_requires_prerequisite_fix_not_candidate_repair(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_ref = _fixture(tmp_path)
+    exported = export_packet(tmp_path, job_ref, capsys)["data"]
+    candidate_path = (
+        tmp_path / "data" / "tasks" / job_ref / "semantic-v1" / "candidate-input.json"
+    )
+    candidate_path.write_text(
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "schema_version": 1,
+                "job_ref": job_ref,
+                "packet_sha256": exported["packet_sha256"],
+                "content": _payload(),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def reject_prerequisite(*_args, **_kwargs) -> None:
+        raise StructuredContentError("structured_input_missing", "fixture prerequisite")
+
+    monkeypatch.setattr(
+        "douyin_knowledge.protocol.validate_structured_payload", reject_prerequisite
+    )
+    code, rejected = invoke(
+        [
+            "--root",
+            str(tmp_path),
+            "candidate",
+            "import",
+            "--job-ref",
+            job_ref,
+            "--input",
+            str(candidate_path),
+            "--json",
+        ],
+        capsys,
+    )
+
+    assert code == 2
+    assert rejected["error"]["code"] == "structured_input_missing"
+    assert rejected["error"]["retryable"] is False
+
+    code, repair = invoke(
+        [
+            "--root",
+            str(tmp_path),
+            "candidate",
+            "repair-contract",
+            "--job-ref",
+            job_ref,
+            "--json",
+        ],
+        capsys,
+    )
+
+    assert code == 0
+    assert repair["data"]["repairable"] is False
+    assert repair["data"]["action"] == "regenerate"
 
 
 def test_repair_contract_diagnoses_legacy_render_failure_without_rewriting_history(

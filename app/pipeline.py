@@ -229,16 +229,36 @@ def _default_playwright_registry() -> Path:
     return Path.home() / ".cache" / "ms-playwright"
 
 
+def _playwright_platform_layouts(
+    platform: str, operating_system: str
+) -> tuple[tuple[str, ...], ...]:
+    if platform == "darwin":
+        executable = (
+            "Google Chrome for Testing.app",
+            "Contents",
+            "MacOS",
+            "Google Chrome for Testing",
+        )
+        return (
+            ("chrome-mac-arm64", *executable),
+            ("chrome-mac-x64", *executable),
+            ("chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"),
+        )
+    if operating_system == "nt":
+        return (
+            ("chrome-win64", "chrome.exe"),
+            ("chrome-win", "chrome.exe"),
+            ("chrome-win32", "chrome.exe"),
+        )
+    return (("chrome-linux64", "chrome"), ("chrome-linux", "chrome"))
+
+
 def _playwright_browser_candidates() -> list[Path]:
     registry = _default_playwright_registry()
     revision = _playwright_chromium_revision()
-    if sys.platform == "darwin":
-        platform_parts = ("chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium")
-    elif os.name == "nt":
-        platform_parts = ("chrome-win", "chrome.exe")
-    else:
-        platform_parts = ("chrome-linux", "chrome")
-    return [registry / f"chromium-{revision}" / Path(*platform_parts)]
+    platform_layouts = _playwright_platform_layouts(sys.platform, os.name)
+    browser_root = registry / f"chromium-{revision}"
+    return [browser_root / Path(*parts) for parts in platform_layouts]
 
 
 def _check_playwright_chromium(*, active_probe: bool = False) -> str:

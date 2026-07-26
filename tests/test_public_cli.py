@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tomllib
 from pathlib import Path
 
+from douyin_knowledge import __version__
 from douyin_knowledge.cli import main
 
 ENVELOPE_KEYS = {
@@ -15,6 +17,13 @@ ENVELOPE_KEYS = {
     "warnings",
     "safe_summary",
 }
+
+
+def test_package_version_matches_pyproject() -> None:
+    pyproject = Path(__file__).parents[1] / "pyproject.toml"
+    metadata = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+
+    assert __version__ == metadata["project"]["version"]
 
 
 def invoke(args: list[str], capsys) -> tuple[int, dict[str, object]]:

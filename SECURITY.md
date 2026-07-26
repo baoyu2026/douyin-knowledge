@@ -19,8 +19,10 @@ can alter credentials, private files, SQLite state, or publication targets.
   selected keyframes, and schemas. Keyframe pixels are not automatically redacted;
   cloud-hosted workers may transmit them under the host's own privacy policy.
 - The CLI owns SQLite, identity, validation, rendering, publication, and acceptance.
-- Login, synchronization, analysis/download, canary, and publication require explicit
-  confirmation.
+- Login, synchronization, analysis/download, canary, and publication require clear
+  user authorization. One explicit end-to-end request may authorize analysis and
+  publication for the same disclosed fixed scope; the CLI still enforces deliberate
+  `--confirm` flags, task locks, validation, journaling, and reconciliation.
 - The project does not support bypassing CAPTCHA, signatures, rate limits, login
   controls, or platform protections.
 

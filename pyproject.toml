@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "douyin-knowledge"
-version = "1.4.2"
+version = "1.4.3"
 description = "Local Douyin favorites-to-knowledge engine and portable AI Skill"
 readme = "README.md"
 license = "Apache-2.0"

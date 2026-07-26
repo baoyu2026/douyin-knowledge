@@ -129,9 +129,9 @@ visual count and requires the worker to inspect every handle. This full input do
 change the candidate or publication limit: `visual_evidence` selects 3 to 8 conclusions,
 and only those referenced frames are copied to the results archive and Obsidian.
 
-## Confirmation Message
+## Scoped Authorization
 
-Before a gated command, state:
+Before starting an operational workflow, state once:
 
 1. The stable job or collection scope.
 2. External calls and whether a browser opens.
@@ -139,9 +139,21 @@ Before a gated command, state:
 4. Private directories or human-readable results/Vault targets written.
 5. The stop point and deterministic checks.
 
-Obtain a new confirmation for publication even if analysis was already confirmed.
-The same rule applies after a correction request: correction intent permits candidate
-revision but does not authorize another results archive or Obsidian write.
+Do not require a magic confirmation phrase. A direct imperative request is valid
+authorization when its scope is clear. If the user asks to run a fixed job or bounded
+batch end to end, the same authorization covers analysis and publication described
+above when the destinations were already selected or used by the user; do not stop
+at an artificial publication checkpoint. The CLI still requires
+`--confirm` on each gated command so the adapter can prove that the host deliberately
+invoked it.
+
+Ask again only if the scope or destination changes, the original request was
+read-only or ambiguous, login/CAPTCHA interaction is newly required, deterministic
+validation reports an unresolved overwrite/conflict, or an irreversible cleanup is
+introduced. A newly disclosed archive, Vault, account, or collection always requires
+one user response before its first write or login. A request to correct and republish one accepted job is sufficient for
+that correction workflow when the write targets are unchanged; a request to inspect
+or diagnose is not.
 No `approve` record is required before publication. Use `review record` only when the
 user explicitly gives that decision for the current published candidate; it is an
 optional audit/correction record and never completion evidence.

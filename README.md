@@ -272,7 +272,7 @@ git pull
 .\.venv\Scripts\python.exe -m compileall -q app src
 .\.venv\Scripts\python.exe -m build
 .\scripts\test-distribution.ps1 `
-  -WheelPath .\dist\douyin_knowledge-1.4.2-py3-none-any.whl `
+  -WheelPath .\dist\douyin_knowledge-1.4.3-py3-none-any.whl `
   -Python .\.venv\Scripts\python.exe
 ```
 

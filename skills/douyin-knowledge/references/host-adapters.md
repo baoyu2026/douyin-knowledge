@@ -27,8 +27,10 @@ A full host must be able to:
 4. Read no unlisted private artifact and perform no network enrichment.
 5. Write one pure UTF-8 JSON candidate atomically at the returned output handle.
 6. Run candidate import and rely on its result rather than conversational output.
-7. Stop for explicit operation confirmations and require accepted publication before
-   reporting completion; do not invent a pre-publication review gate.
+7. Bind every mutation to clear user authorization and require accepted publication
+   before reporting completion. A single end-to-end request may authorize the fixed
+   analysis and publication scope; do not invent phrase-matching or pre-publication
+   review gates.
 8. Keep runtime bindings, credentials, raw evidence, and private paths out of model context.
 
 ## Codex

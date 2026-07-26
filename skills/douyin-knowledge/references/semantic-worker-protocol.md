@@ -2,6 +2,12 @@
 
 ## Inputs
 
+Treat one packet as an indivisible worker assignment. The same worker must perform
+the complete manifest/chunk traversal, visual inspection, candidate generation, and
+atomic write. Do not delegate the remaining frames or output step to another worker,
+because conversational handoff is not evidence that the receiving worker preserved
+the complete ordered inventory, schema handle, output handle, and packet hash.
+
 Use the relative handles returned by `packet export`:
 
 - `content-packet.json`: bounded, sanitized summary packet.
@@ -69,7 +75,10 @@ candidate, run `candidate repair-contract`.
 - If `repairable=false`, discard the candidate and regenerate from the current
   packet and schema.
 - If `repairable=true`, permit one worker attempt restricted to the contract's
-  editable fields.
+  editable fields. Fix the reported error and revalidate every
+  `required_content_invariants` entry before writing; deterministic validation may
+  report only the first failing gate, so a one-field patch is insufficient evidence
+  that the bounded repair is complete.
 - Never alter provenance fields or perform a second repair attempt.
 - Stop after two failures for the same stage and preserve all checkpoints.
 

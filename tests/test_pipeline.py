@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.pipeline import doctor, inventory, status
+from app.pipeline import _playwright_platform_layouts, doctor, inventory, status
 from app.security import (
     GateError,
     block_unexpected_cookie_candidates,
@@ -71,6 +71,20 @@ notifications:
 """.strip(),
         encoding="utf-8",
     )
+
+
+def test_playwright_layouts_cover_current_and_legacy_platform_names() -> None:
+    windows = _playwright_platform_layouts("win32", "nt")
+    linux = _playwright_platform_layouts("linux", "posix")
+    macos = _playwright_platform_layouts("darwin", "posix")
+
+    assert ("chrome-win64", "chrome.exe") in windows
+    assert ("chrome-win", "chrome.exe") in windows
+    assert ("chrome-linux64", "chrome") in linux
+    assert ("chrome-linux", "chrome") in linux
+    assert any(parts[0] == "chrome-mac-arm64" for parts in macos)
+    assert any(parts[0] == "chrome-mac-x64" for parts in macos)
+    assert all(parts[-1] == "Google Chrome for Testing" for parts in macos[:2])
 
 
 def test_inventory_discovers_video_and_is_idempotent(tmp_path: Path) -> None:

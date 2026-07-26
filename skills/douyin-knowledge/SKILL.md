@@ -46,24 +46,30 @@ instance directory. Never treat an assistant message as completion evidence.
   confirmation. Never delete the legacy root manually.
 - For collection refresh, run confirmed `sync`; it must not download media.
 - For one item, use `plan --limit 1`, select that returned `job_ref`, then run a
-  confirmed no-publish canary.
-- For semantic work, export one packet, let one worker write one pure JSON
-  candidate, import it, and check authoritative status. Read
+  no-publish canary within the user's authorized scope.
+- For semantic work, export one packet and assign it to exactly one worker. That
+  same worker must personally read every evidence chunk, inspect every visual, and
+  atomically write one pure JSON candidate; never split or re-delegate a partially
+  reviewed packet. Import it and check authoritative status. Read
   [references/semantic-worker-protocol.md](references/semantic-worker-protocol.md).
 - After successful candidate import, do not stop for pre-publication human approval.
   The candidate is publishable only after deterministic schema, provenance, privacy,
   evidence, and content gates pass.
-- For publication, describe the exact job, network/model calls, expected time,
-  human-readable results/Vault writes, journal/checkpoint behavior, and validation. Wait for a new,
-  explicit confirmation, then publish serially. Count the job as complete only when
-  publication returns `accepted` after reconciliation.
+- Before starting an operational request, describe the exact job or bounded batch,
+  network/model calls, expected time, human-readable results/Vault writes,
+  journal/checkpoint behavior, and validation. A direct request such as "run one
+  video end to end" or "process these items and publish them" authorizes all of
+  those stages for that fixed scope when it uses the already configured destinations
+  that the user previously selected or used. Do not pause at publication merely to
+  collect a second mechanical confirmation. Publish serially and count the job as
+  complete only when publication returns `accepted` after reconciliation.
 - For correction, let the user inspect the accepted note in Obsidian. When the user
   requests a correction, treat that request as sufficient correction intent; do not
   ask them to complete a separate approve/reject workflow. Preserve candidate
   history and the user's unmanaged Obsidian sections, generate and import one
-  corrected candidate, then obtain a new explicit publication confirmation before
-  republishing the same job and reconciling again. Correction intent authorizes the
-  candidate revision, not the Obsidian write. Record an internal review decision only
+  corrected candidate, then republish and reconcile when the user's request clearly
+  asks for the correction to be completed. A request to diagnose only does not
+  authorize republishing. Record an internal review decision only
   when required for candidate history or requested for audit; it is never a
   completion gate.
 - For failures or interrupted work, read
@@ -81,9 +87,19 @@ instance directory. Never treat an assistant message as completion evidence.
 
 ## Enforce Boundaries
 
-- Require explicit confirmation for results-folder configuration, historical-results
-  migration or cleanup, login, sync, run/download/local analysis, canary, and publish. Treat
-  publish as a separate confirmation from analysis.
+- Treat confirmation as scoped authorization, not a phrase-matching ceremony. An
+  imperative user request made after, or together with, a clear scope description is
+  sufficient; never require the literal word `confirm`. One authorization may cover
+  download, local analysis, candidate generation, and publication for the same fixed
+  job or bounded batch when the user asks for the complete workflow.
+- Never infer authorization for a new or changed results archive, Vault, account, or
+  collection from a generic end-to-end request. Describe the new scope and wait for
+  one user response before the first write or login involving that scope.
+- Obtain new authorization only when the scope or destination changes, the request
+  was read-only or ambiguous, login/CAPTCHA interaction becomes necessary, an
+  overwrite/conflict cannot be resolved deterministically, or an irreversible action
+  such as legacy cleanup is introduced. Folder configuration, historical migration,
+  and cleanup remain separately scoped operations.
 - Keep publishing disabled by default. Use `canary --limit 1 --no-publish` first.
 - Never call an undocumented "next item" selector. Use `plan`, an explicit limit,
   and stable `job_ref` values.

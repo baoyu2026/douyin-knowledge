@@ -31,16 +31,45 @@ CANDIDATE_FIELDS = (
     "packet_sha256",
     "content",
 )
-NON_REPAIRABLE_ERRORS = frozenset(
+REPAIRABLE_CONTENT_ERRORS = frozenset(
     {
-        "candidate_json_invalid",
-        "candidate_schema_invalid",
-        "candidate_protocol_mismatch",
-        "candidate_schema_version_mismatch",
-        "candidate_job_mismatch",
-        "candidate_packet_mismatch",
-        "packet_manifest_missing",
+        "structured_privacy_rejected",
+        "structured_category_invalid",
+        "structured_tags_invalid",
+        "structured_pending_review_invalid",
+        "structured_review_status_invalid",
+        "structured_related_invalid",
+        "structured_visual_evidence_invalid",
+        "content_privacy_rejected",
+        "content_category_invalid",
+        "content_tags_invalid",
+        "content_review_incomplete",
+        "content_review_verdict_invalid",
+        "content_review_status_invalid",
+        "content_pending_review_invalid",
+        "content_pending_review_missing",
+        "content_links_missing",
+        "content_links_invalid",
+        "content_visual_evidence_missing",
+        "content_visual_evidence_invalid",
+        "content_numbers_unreviewed",
+        "content_sections_incomplete",
+        "content_body_too_shallow",
     }
+)
+CONTENT_REPAIR_INVARIANTS = (
+    "the content object satisfies every current JSON schema constraint",
+    "title and every required publishable section are specific, complete, and substantial",
+    "primary_category is specific and is not a generic placeholder",
+    "tags contain 2 to 8 unique, specific, non-placeholder values",
+    "proper_noun_review and numeric_review register every publishable noun and number",
+    "unresolved noun or numeric verdicts exist if and only if pending_review is non-empty",
+    "review_status is needs_review when pending_review is non-empty, otherwise verified",
+    "analysis quality flags that require review are reflected consistently in review fields",
+    "every publishable number is registered in numeric_review with evidence and a verdict",
+    "every related_knowledge title resolves uniquely within the supplied catalog",
+    "visual_evidence contains 3 to 8 unique in-range frame indexes",
+    "privacy-triggering values and unsupported facts remain excluded",
 )
 
 
@@ -314,7 +343,7 @@ def repair_contract(root: Path, job_ref: str) -> dict[str, Any]:
                     diagnostic_draft.unlink(missing_ok=True)
     rejection = _load_object(rejection_path, "candidate_rejection_missing")
     code = str(rejection.get("error_code") or "candidate_rejection_missing")
-    repairable = code not in NON_REPAIRABLE_ERRORS
+    repairable = code in REPAIRABLE_CONTENT_ERRORS
     contract = {
         "protocol_version": PROTOCOL_VERSION,
         "job_ref": job_ref,
@@ -324,6 +353,13 @@ def repair_contract(root: Path, job_ref: str) -> dict[str, Any]:
         "action": "repair_content_once" if repairable else "regenerate",
         "max_repair_attempts": 1 if repairable else 0,
         "editable_top_level_fields": ["content"] if repairable else [],
+        "required_content_invariants": list(CONTENT_REPAIR_INVARIANTS) if repairable else [],
+        "repair_instruction": (
+            "fix the reported error and revalidate every required content invariant before "
+            "consuming the single repair attempt"
+            if repairable
+            else "regenerate from the current packet and schema"
+        ),
         "immutable_top_level_fields": [
             "protocol_version",
             "schema_version",
@@ -399,10 +435,16 @@ def import_candidate(root: Path, job_ref: str, supplied: Path) -> dict[str, Any]
         raise
     except StructuredContentError as exc:
         _record_rejection(root, job_ref, candidate_path, code=exc.code)
+        repairable = exc.code in REPAIRABLE_CONTENT_ERRORS
         raise CliError(
             exc.code,
             "candidate content did not pass deterministic gates",
-            "use the bounded repair contract when the error is retryable",
+            (
+                "use the bounded repair contract and revalidate every listed invariant"
+                if repairable
+                else "correct the local prerequisite or regenerate from the current packet"
+            ),
+            retryable=repairable,
         ) from exc
 
     accepted_path = task / "candidate-v1.json"
@@ -502,10 +544,16 @@ def import_candidate(root: Path, job_ref: str, supplied: Path) -> dict[str, Any]
         render_structured_json_artifact(root, job_ref, raw_path, draft_path)
     except StructuredContentError as exc:
         _record_rejection(root, job_ref, accepted_path, code=exc.code)
+        repairable = exc.code in REPAIRABLE_CONTENT_ERRORS
         raise CliError(
             exc.code,
             "candidate rendering or staging validation failed",
-            "correct only the rejected fields and import one replacement candidate",
+            (
+                "use the bounded repair contract and revalidate every listed invariant"
+                if repairable
+                else "correct the local rendering prerequisite before importing again"
+            ),
+            retryable=repairable,
         ) from exc
     manifest["imported_candidate_sha256"] = candidate_hash
     manifest.pop("superseded_candidate_sha256", None)
