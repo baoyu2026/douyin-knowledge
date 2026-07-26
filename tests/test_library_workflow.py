@@ -1,6 +1,9 @@
 import asyncio
 import io
 import json
+import re
+import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -18,7 +21,7 @@ from app.probe_one import (
     existing_job_source,
     stable_job_id,
 )
-from app.publish_library import PublicationError, publish_job, safe_component
+from app.publish_library import PublicationError, _front_matter, publish_job, safe_component
 
 
 def register_collection_item(root: Path, aweme_id: str) -> str:
@@ -371,6 +374,16 @@ def test_obsidian_low_quality_publish_preserves_annotations_without_completion(
     )
     note = vault / "40-Resources" / "抖音收藏" / "软件工程" / "幂等发布：样板.md"
     document = note.read_text(encoding="utf-8")
+    first_metadata, _body = _front_matter(document)
+    first_uploaded_at = first_metadata["uploaded_at"]
+    assert isinstance(first_uploaded_at, datetime)
+    assert first_uploaded_at.tzinfo is not None
+    with sqlite3.connect(tmp_path / "data" / "knowledge.db") as connection:
+        first_published_at = connection.execute(
+            "SELECT published_at FROM obsidian_publications"
+        ).fetchone()[0]
+    assert first_uploaded_at.isoformat() == first_published_at
+    document = re.sub(r"^uploaded_at:.*\n", "", document, count=1, flags=re.MULTILINE)
     document = document.replace("这里的内容不会被自动更新覆盖。", "我的人工判断：保持不变。")
     note.write_text(document, encoding="utf-8")
     attachment_dir = vault / "99-Attachments" / "抖音收藏" / "幂等发布：样板"
@@ -386,6 +399,8 @@ def test_obsidian_low_quality_publish_preserves_annotations_without_completion(
         vault=vault,
     )
     repeated = note.read_text(encoding="utf-8")
+    repeated_metadata, _body = _front_matter(repeated)
+    assert repeated_metadata["uploaded_at"] == first_uploaded_at
     assert repeated.count("我的人工判断：保持不变。") == 1
     assert repeated.count("<!-- AUTO-GENERATED:START -->") == 1
     assert "\\n" not in repeated
@@ -402,13 +417,14 @@ def test_obsidian_low_quality_publish_preserves_annotations_without_completion(
     )
     assert "[附件/完整时间轴.md]" not in repeated
 
-    import sqlite3
-
     with sqlite3.connect(tmp_path / "data" / "knowledge.db") as connection:
         assert connection.execute(
             "SELECT status FROM collection_items WHERE job_id = ?", (job_id,)
         ).fetchone()[0] == "analyzed"
         assert connection.execute("SELECT COUNT(*) FROM obsidian_publications").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT published_at FROM obsidian_publications"
+        ).fetchone()[0] == first_published_at
 
 
 def test_existing_timeline_section_gets_one_vault_link() -> None:

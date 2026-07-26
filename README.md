@@ -148,7 +148,7 @@ Skill 会依次检查环境，并在以下操作前说明影响、等待确认�
 
 登录、同步、分析和发布不是一次总授权。候选导入不算完成，写入但未对账也不算完成；只有发布状态为 `accepted` 时才会把视频标为 `completed`。
 
-人工检查发生在发布之后。每篇新 Obsidian 笔记都会标记 `review_status: unreviewed`，AI 对证据的核验结果另记为 `evidence_status`。你直接在 Obsidian 阅读；发现问题后告诉 Skill 即可，它会把这次反馈作为纠错请求，保留历史候选和 Obsidian 手工区，针对同一条视频生成修正版并重新发布对账。你不需要再走单独的 `approve/reject` 流程。
+人工检查发生在发布之后。每篇新 Obsidian 笔记都会标记 `review_status: unreviewed`，AI 对证据的核验结果另记为 `evidence_status`。`uploaded_at` 保存首次上传到 Obsidian 的带时区时间，可用于按上传先后排序；同一笔记后续纠错重发不会改变它。你直接在 Obsidian 阅读；发现问题后告诉 Skill 即可，它会把这次反馈作为纠错请求，保留历史候选和 Obsidian 手工区，针对同一条视频生成修正版并重新发布对账。你不需要再走单独的 `approve/reject` 流程。
 
 ## 手动检查
 
@@ -272,7 +272,7 @@ git pull
 .\.venv\Scripts\python.exe -m compileall -q app src
 .\.venv\Scripts\python.exe -m build
 .\scripts\test-distribution.ps1 `
-  -WheelPath .\dist\douyin_knowledge-1.4.4-py3-none-any.whl `
+  -WheelPath .\dist\douyin_knowledge-1.4.5-py3-none-any.whl `
   -Python .\.venv\Scripts\python.exe
 ```
 

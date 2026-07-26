@@ -35,6 +35,7 @@ MANAGED_PROPERTIES = {
     "evidence_status",
     "favorite_state",
     "processed_at",
+    "uploaded_at",
     "content_version",
     "cover",
     "related_notes",
@@ -166,6 +167,21 @@ def _render_front_matter(existing: dict[str, Any], managed: dict[str, Any]) -> s
     )
 
 
+def _aware_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
 def _replace_front_matter(document: str, rendered: str) -> str:
     _metadata, body = _front_matter(document)
     return rendered + body.lstrip("\n")
@@ -289,7 +305,8 @@ def publish_to_obsidian(
         if item is None:
             raise PublicationError("obsidian_registry_missing", "外部注册表缺少当前条目")
         existing = connection.execute(
-            "SELECT media_sha256, note_path, attachment_path FROM obsidian_publications "
+            "SELECT media_sha256, note_path, attachment_path, published_at "
+            "FROM obsidian_publications "
             "WHERE source_id = ?",
             (item["source_id"],),
         ).fetchone()
@@ -341,6 +358,11 @@ def publish_to_obsidian(
     existing_document = note.read_text(encoding="utf-8") if note.is_file() else ""
     existing_metadata, _existing_body = _front_matter(existing_document)
     processed_at = str(existing_metadata.get("processed_at") or datetime.now(UTC).date())
+    uploaded_at = _aware_datetime(existing_metadata.get("uploaded_at"))
+    if uploaded_at is None and existing is not None:
+        uploaded_at = _aware_datetime(existing["published_at"])
+    if uploaded_at is None:
+        uploaded_at = datetime.now().astimezone().replace(microsecond=0)
     related_notes = existing_metadata.get("related_notes") or []
     managed = {
         "type": "douyin-video",
@@ -357,6 +379,7 @@ def publish_to_obsidian(
         ),
         "favorite_state": "active" if item["currently_collected"] else "uncollected",
         "processed_at": processed_at,
+        "uploaded_at": uploaded_at,
         "content_version": 2,
         "cover": f"[[{frame_links[0]}]]",
         "related_notes": related_notes,
@@ -399,15 +422,14 @@ def publish_to_obsidian(
             ON CONFLICT(source_id) DO UPDATE SET
                 media_sha256 = excluded.media_sha256,
                 note_path = excluded.note_path,
-                attachment_path = excluded.attachment_path,
-                published_at = excluded.published_at
+                attachment_path = excluded.attachment_path
             """,
             (
                 item["source_id"],
                 media_hash,
                 note_relative.as_posix(),
                 attachment_relative.as_posix(),
-                datetime.now(UTC).isoformat(),
+                uploaded_at.isoformat(),
             ),
         )
     return note

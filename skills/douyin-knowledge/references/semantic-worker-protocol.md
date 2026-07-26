@@ -91,8 +91,10 @@ not count candidate import as completion. Publish to the results archive and Obs
 reconcile the sealed targets, and require `accepted` before reporting the job complete.
 
 The published Obsidian note starts with `review_status: unreviewed`; its independent
-`evidence_status` reflects the candidate's evidence checks. If the user later reports
-a problem from Obsidian, treat that report as correction intent without asking for a
-separate approve/reject step. Use the current packet to produce one corrected candidate,
-preserve the old publication through backups/journal, republish the same job, and
-reconcile again. Never expose raw packet evidence or private source material.
+`evidence_status` reflects the candidate's evidence checks. Its `uploaded_at` property
+records the first successful Obsidian upload as a timezone-aware timestamp and remains
+stable across corrections so Vault views can sort by original upload order. If the user
+later reports a problem from Obsidian, treat that report as correction intent without
+asking for a separate approve/reject step. Use the current packet to produce one corrected
+candidate, preserve the old publication through backups/journal, republish the same job,
+and reconcile again. Never expose raw packet evidence or private source material.

@@ -45,7 +45,7 @@ instance without putting either absolute path in conversational output.
 # Optional post-publication audit/correction records:
 <invoke> review list --job-ref <ref> --json
 <invoke> review record --job-ref <ref> --decision <approve|reject> --json
-<invoke> publish --job-ref <ref> --confirm --json
+<invoke> publish --job-ref <ref> [--idempotency-key <stable-key>] --confirm --json
 <invoke> reconcile --job-ref <ref> --json
 ```
 
@@ -162,3 +162,10 @@ or diagnose is not.
 No `approve` record is required before publication. Use `review record` only when the
 user explicitly gives that decision for the current published candidate; it is an
 optional audit/correction record and never completion evidence.
+
+Omit `--idempotency-key` for a candidate's normal first publication. Reuse the same
+explicit key only when retrying the exact same changed publication request. When a
+correction, renderer upgrade, or managed-metadata change intentionally produces new
+target digests for an already accepted candidate, use a new stable opaque key, keep
+the previous journal entry, publish serially, and require the new transaction to reach
+`accepted` after reconciliation.
