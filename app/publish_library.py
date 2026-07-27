@@ -24,7 +24,8 @@ from douyin_knowledge.result_archive import RESULTS_LAYOUT, results_root
 
 JOBS_DIR = Path("data/jobs")
 INDEX_DIR_NAME = "00-总索引"
-INDEX_FILES = ("全部视频.md", "按主题.md", "最近新增.md", "待人工复核.md")
+INDEX_FILES = ("全部视频.md", "按主题.md", "最近新增.md")
+LEGACY_INDEX_FILES = ("待人工复核.md",)
 WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -516,7 +517,7 @@ def publish_job(
     category: str,
     title: str | None,
     tags: list[str],
-    review_status: str = "待人工复核",
+    review_status: str = "未检查（可选）",
     vault: Path | None = None,
     content_draft: Path | None = None,
     quality_mode: str = "low-review",
@@ -675,7 +676,7 @@ def discover_entries(library_root: Path) -> list[dict[str, Any]]:
                 "category": category,
                 "tags": [_single_line(tag) for tag in tags if _single_line(tag)],
                 "added_at": _single_line(metadata.get("新增时间")),
-                "review_status": _single_line(metadata.get("复核状态")) or "待人工复核",
+                "review_status": _single_line(metadata.get("复核状态")) or "未检查（可选）",
                 "link": "../" + relative.as_posix(),
             }
         )
@@ -695,7 +696,7 @@ def generate_indexes(library_root: Path) -> None:
     all_lines = [
         "# 全部视频",
         "",
-        "| 标题 | 主分类 | 标签 | 新增时间 | 复核状态 |",
+        "| 标题 | 主分类 | 标签 | 新增时间 | 检查状态 |",
         "| --- | --- | --- | --- | --- |",
     ]
     for entry in sorted(entries, key=lambda item: (item["category"], item["title"])):
@@ -735,23 +736,15 @@ def generate_indexes(library_root: Path) -> None:
     if not recent:
         recent_lines.append("暂无内容。")
 
-    review_lines = ["# 待人工复核", ""]
-    pending = [entry for entry in entries if entry["review_status"] != "已复核"]
-    review_lines.extend(
-        f"- {_entry_link(entry)} · {entry['category']} · {entry['review_status']}"
-        for entry in pending
-    )
-    if not pending:
-        review_lines.append("暂无待复核内容。")
-
     rendered = {
         "全部视频.md": "\n".join(all_lines).rstrip() + "\n",
         "按主题.md": "\n".join(topic_lines).rstrip() + "\n",
         "最近新增.md": "\n".join(recent_lines).rstrip() + "\n",
-        "待人工复核.md": "\n".join(review_lines).rstrip() + "\n",
     }
     for name in INDEX_FILES:
         atomic_write_text(index_dir / name, rendered[name])
+    for name in LEGACY_INDEX_FILES:
+        (index_dir / name).unlink(missing_ok=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -772,8 +765,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--review-status",
-        choices=("待人工复核", "已复核"),
-        default="待人工复核",
+        choices=("未检查（可选）", "已检查"),
+        default="未检查（可选）",
     )
     return parser
 

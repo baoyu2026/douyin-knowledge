@@ -2,6 +2,11 @@
 
 ## Inputs
 
+Receive only a directory created by `handoff materialize`. Do not read the Skill
+runtime binding or private instance directly. The orchestrator must later ingest the
+candidate with `handoff ingest` and remove the verified directory with
+`handoff cleanup`; conversationally returning JSON is not ingestion.
+
 Treat one packet as an indivisible worker assignment. The same worker must perform
 the complete manifest/chunk traversal, visual inspection, candidate generation, and
 atomic write. Do not delegate the remaining frames or output step to another worker,
@@ -94,6 +99,9 @@ candidate, run `candidate repair-contract`.
   `required_content_invariants` entry before writing; deterministic validation may
   report only the first failing gate, so a one-field patch is insufficient evidence
   that the bounded repair is complete.
+- For an isolated handoff, the orchestrator must run `handoff repair-contract` so the
+  bounded contract is attached to the hash-protected handoff manifest. The same
+  worker rereads that manifest before its only repair attempt.
 - Never alter provenance fields or perform a second repair attempt.
 - Stop after two failures for the same stage and preserve all checkpoints.
 
@@ -105,10 +113,11 @@ not request another mechanical confirmation. Do not pause for draft approval and
 not count candidate import as completion. Publish to the results archive and Obsidian,
 reconcile the sealed targets, and require `accepted` before reporting the job complete.
 
-The published Obsidian note starts with `review_status: unreviewed`; its independent
-`evidence_status` reflects the candidate's evidence checks. Its `uploaded_at` property
-records the first successful Obsidian upload as a timezone-aware timestamp and remains
-stable across corrections so Vault views can sort by original upload order. If the user
+The published Obsidian note starts with `review_status: optional_unchecked`; this is an
+optional user-reading marker, never a completion gate. Its independent `evidence_status`
+reflects the candidate's evidence checks. Its `uploaded_at` property records the first
+successful Obsidian upload and remains stable across corrections, while `updated_at`
+records the newest publication. Both are timezone-aware. If the user
 later reports a problem from Obsidian, treat that report as correction intent without
 asking for a separate approve/reject step. Use the current packet to produce one corrected
 candidate, preserve the old publication through backups/journal, republish the same job,

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +32,56 @@ PRIVATE_PATTERNS = (
     re.compile(r"(?i)\b(job[_ -]?id|source[_ -]?id|aweme[_ -]?id)\b"),
     re.compile(r"\baweme-[a-f0-9]{20}\b", re.I),
 )
+PUBLISHER_STALE_SECONDS = 2 * 60 * 60
+
+
+class _PublisherLease:
+    def __init__(self, root: Path, job_ref: str) -> None:
+        self.root = root
+        self.job_ref = job_ref
+        self.path = root / "data" / "run-leases" / "publisher.lock"
+        self.acquired = False
+
+    def __enter__(self) -> _PublisherLease:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            age = time.time() - self.path.stat().st_mtime
+        except FileNotFoundError:
+            age = 0
+        if age > PUBLISHER_STALE_SECONDS:
+            digest = "unknown"
+            try:
+                digest = hashlib.sha256(self.path.read_bytes()).hexdigest()
+            except OSError:
+                pass
+            quarantine = self.root / "quarantine" / "publication-locks"
+            quarantine.mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(self.path, quarantine / f"{digest}.lock")
+            except FileNotFoundError:
+                pass
+        try:
+            descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            raise CliError(
+                "publisher_capacity_reached",
+                "another publication already owns the serial publisher slot",
+                "wait for it to finish, then reconcile before retrying the same job",
+                retryable=True,
+            ) from exc
+        try:
+            os.write(
+                descriptor,
+                (json.dumps({"job_ref": self.job_ref, "started_at": time.time()}) + "\n").encode(),
+            )
+        finally:
+            os.close(descriptor)
+        self.acquired = True
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        if self.acquired:
+            self.path.unlink(missing_ok=True)
 
 
 def _digest(path: Path) -> str:
@@ -62,7 +115,7 @@ def _registered_vault_note(database: Path, job_ref: str) -> Path | None:
     return Path(row[0])
 
 
-def publish_staged_job(
+def _publish_staged_job(
     root: Path,
     *,
     job_ref: str,
@@ -206,3 +259,18 @@ def publish_staged_job(
             "content": library_note.is_file() and vault_note.is_file(),
         },
     )
+
+
+def publish_staged_job(
+    root: Path,
+    *,
+    job_ref: str,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    root = root.resolve()
+    with _PublisherLease(root, job_ref):
+        return _publish_staged_job(
+            root,
+            job_ref=job_ref,
+            idempotency_key=idempotency_key,
+        )

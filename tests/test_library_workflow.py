@@ -265,13 +265,12 @@ def test_publish_is_idempotent_and_builds_classification_tags_and_indexes(
         "全部视频.md",
         "按主题.md",
         "最近新增.md",
-        "待人工复核.md",
     }
     assert "路径安全 标题" in (index_dir / "全部视频.md").read_text(encoding="utf-8")
     assert "## 软件工程" in (index_dir / "按主题.md").read_text(encoding="utf-8")
     assert "**Python**" in (index_dir / "按主题.md").read_text(encoding="utf-8")
     assert "路径安全 标题" in (index_dir / "最近新增.md").read_text(encoding="utf-8")
-    assert "路径安全 标题" in (index_dir / "待人工复核.md").read_text(encoding="utf-8")
+    assert not (index_dir / "待人工复核.md").exists()
 
 
 def test_publish_numbers_same_title_for_different_video_without_exposing_source_id(
@@ -378,12 +377,21 @@ def test_obsidian_low_quality_publish_preserves_annotations_without_completion(
     first_uploaded_at = first_metadata["uploaded_at"]
     assert isinstance(first_uploaded_at, datetime)
     assert first_uploaded_at.tzinfo is not None
+    assert isinstance(first_metadata["updated_at"], datetime)
+    assert first_metadata["updated_at"].tzinfo is not None
     with sqlite3.connect(tmp_path / "data" / "knowledge.db") as connection:
         first_published_at = connection.execute(
             "SELECT published_at FROM obsidian_publications"
         ).fetchone()[0]
     assert first_uploaded_at.isoformat() == first_published_at
     document = re.sub(r"^uploaded_at:.*\n", "", document, count=1, flags=re.MULTILINE)
+    document = re.sub(
+        r"^updated_at:.*\n",
+        "updated_at: 2000-01-01T00:00:00+00:00\n",
+        document,
+        count=1,
+        flags=re.MULTILINE,
+    )
     document = document.replace("这里的内容不会被自动更新覆盖。", "我的人工判断：保持不变。")
     document = re.sub(
         r"(?m)^- \[在本机打开原视频\]\([^\n]+\)$",
@@ -406,6 +414,7 @@ def test_obsidian_low_quality_publish_preserves_annotations_without_completion(
     repeated = note.read_text(encoding="utf-8")
     repeated_metadata, _body = _front_matter(repeated)
     assert repeated_metadata["uploaded_at"] == first_uploaded_at
+    assert repeated_metadata["updated_at"].year != 2000
     assert repeated.count("我的人工判断：保持不变。") == 1
     assert repeated.count("<!-- AUTO-GENERATED:START -->") == 1
     assert "\\n" not in repeated

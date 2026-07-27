@@ -55,6 +55,7 @@ foreach ($Relative in $Paths) {
     }
     Invoke-Checked icacls $Target "/inheritance:r"
     Invoke-Checked icacls $Target "/remove:g" "Everyone" "BUILTIN\Users" "NT AUTHORITY\Authenticated Users" "Authenticated Users"
+    Invoke-Checked icacls $Target "/remove:d" "Everyone" "BUILTIN\Users" "NT AUTHORITY\Authenticated Users" "Authenticated Users"
     Invoke-Checked icacls $Target "/grant:r" "${CurrentUser}:(OI)(CI)(F)" "SYSTEM:(OI)(CI)(F)" "BUILTIN\Administrators:(OI)(CI)(F)"
 }
 
@@ -62,8 +63,6 @@ $Cookie = Resolve-SafeProjectPath "config\cookies.json"
 if (Test-Path -LiteralPath $Cookie) {
     Invoke-Checked icacls $Cookie "/inheritance:r"
     Invoke-Checked icacls $Cookie "/remove:g" "Everyone" "BUILTIN\Users" "NT AUTHORITY\Authenticated Users" "Authenticated Users"
+    Invoke-Checked icacls $Cookie "/remove:d" "Everyone" "BUILTIN\Users" "NT AUTHORITY\Authenticated Users" "Authenticated Users"
     Invoke-Checked icacls $Cookie "/grant:r" "${CurrentUser}:(F)" "SYSTEM:(F)" "BUILTIN\Administrators:(F)"
 }
-
-& (Join-Path $ResolvedRoot ".venv\Scripts\python.exe") -m app.security metadata --root $ResolvedRoot
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from douyin_knowledge import __version__
+from douyin_knowledge.batch import batch_status, create_batch, fixed_plan
 from douyin_knowledge.contracts import CliError, failure, success
 from douyin_knowledge.operations import run_job
 from douyin_knowledge.paths import default_instance_root, repository_root
@@ -38,6 +39,13 @@ from douyin_knowledge.results_migration import (
     migrate_legacy_results,
 )
 from douyin_knowledge.review import list_reviews, record_review
+from douyin_knowledge.semantic_handoff import (
+    cleanup_handoff,
+    ingest_handoff,
+    materialize_handoff,
+    materialize_handoff_repair_contract,
+    semantic_assignment_capacity,
+)
 
 INSTANCE_DIRS = (
     "config",
@@ -140,6 +148,7 @@ def _copy_schemas(root: Path) -> None:
         "cli-envelope-v1.schema.json",
         "config-v1.schema.json",
         "results-config-v1.schema.json",
+        "batch-state-v1.schema.json",
     ):
         source = repository_root() / "schemas" / name
         destination = root / "schemas" / name
@@ -179,6 +188,7 @@ def _init(root: Path) -> dict[str, Any]:
             "cli-envelope-v1.schema.json",
             "config-v1.schema.json",
             "results-config-v1.schema.json",
+            "batch-state-v1.schema.json",
         )
     )
     reused = (
@@ -250,6 +260,7 @@ def _status(root: Path) -> dict[str, Any]:
             if "connection" in locals():
                 connection.close()
     publication = {"intent": 0, "published_unaccepted": 0, "accepted": 0}
+    publication_drift_count = 0
     if database.is_file():
         with sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True) as connection:
             if _table_exists(connection, "publication_sagas"):
@@ -268,6 +279,22 @@ def _status(root: Path) -> dict[str, Any]:
                         ).fetchall()
                     )
                 )
+                if _table_exists(connection, "publication_targets"):
+                    publication_drift_count = int(
+                        connection.execute(
+                            "SELECT COUNT(DISTINCT current.job_ref) "
+                            "FROM publication_sagas AS current "
+                            "JOIN publication_targets AS target "
+                            "ON target.saga_id = current.saga_id "
+                            "WHERE current.state = 'accepted' "
+                            "AND target.status != 'verified' AND NOT EXISTS ("
+                            "SELECT 1 FROM publication_sagas AS newer "
+                            "WHERE newer.job_ref = current.job_ref AND ("
+                            "newer.created_at > current.created_at OR ("
+                            "newer.created_at = current.created_at "
+                            "AND newer.saga_id > current.saga_id)))"
+                        ).fetchone()[0]
+                    )
     active_stage = None
     active_job_ref = None
     active_runs: list[dict[str, str]] = []
@@ -285,6 +312,7 @@ def _status(root: Path) -> dict[str, Any]:
     if active_runs:
         active_job_ref = active_runs[0]["job_ref"]
         active_stage = active_runs[0]["stage"]
+    semantic_capacity = semantic_assignment_capacity(root)
     data = {
         "total": sum(counts.values()),
         "by_status": dict(sorted(counts.items())),
@@ -293,6 +321,15 @@ def _status(root: Path) -> dict[str, Any]:
         "active_job_ref": active_job_ref,
         "active_runs": active_runs,
         "publication": publication,
+        "publication_drift_count": publication_drift_count,
+        "resources": {
+            "cpu_busy": (root / "data" / "run-leases" / "cpu.lock").is_file(),
+            "semantic_slots_used": semantic_capacity["used"],
+            "semantic_slots_available": semantic_capacity["available"],
+            "publisher_busy": (
+                root / "data" / "run-leases" / "publisher.lock"
+            ).is_file(),
+        },
     }
     return success("status", data, summary=f"{data['total']} collection items")
 
@@ -557,11 +594,43 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--limit", type=int, default=1)
     plan.add_argument("--status", choices=PLAN_STATUSES)
     plan.add_argument("--json", action="store_true")
+    batch = subparsers.add_parser("batch")
+    batch_commands = batch.add_subparsers(dest="batch_command", required=True)
+    batch_create = batch_commands.add_parser("create")
+    batch_create.add_argument("--job-ref", action="append", required=True)
+    batch_create.add_argument("--status", choices=PLAN_STATUSES)
+    batch_create.add_argument("--confirm", action="store_true")
+    batch_create.add_argument("--json", action="store_true")
+    for name in ("status", "resume"):
+        batch_read = batch_commands.add_parser(name)
+        batch_read.add_argument("--batch-ref", required=True)
+        batch_read.add_argument("--json", action="store_true")
     packet = subparsers.add_parser("packet")
     packet_commands = packet.add_subparsers(dest="packet_command", required=True)
     packet_export = packet_commands.add_parser("export")
     packet_export.add_argument("--job-ref", required=True)
     packet_export.add_argument("--json", action="store_true")
+    handoff = subparsers.add_parser("handoff")
+    handoff_commands = handoff.add_subparsers(dest="handoff_command", required=True)
+    handoff_materialize = handoff_commands.add_parser("materialize")
+    handoff_materialize.add_argument("--job-ref", required=True)
+    handoff_materialize.add_argument("--directory", type=Path, required=True)
+    handoff_materialize.add_argument("--confirm", action="store_true")
+    handoff_materialize.add_argument("--json", action="store_true")
+    handoff_ingest = handoff_commands.add_parser("ingest")
+    handoff_ingest.add_argument("--job-ref", required=True)
+    handoff_ingest.add_argument("--directory", type=Path, required=True)
+    handoff_ingest.add_argument("--json", action="store_true")
+    handoff_repair = handoff_commands.add_parser("repair-contract")
+    handoff_repair.add_argument("--job-ref", required=True)
+    handoff_repair.add_argument("--directory", type=Path, required=True)
+    handoff_repair.add_argument("--json", action="store_true")
+    handoff_cleanup = handoff_commands.add_parser("cleanup")
+    handoff_cleanup.add_argument("--job-ref", required=True)
+    handoff_cleanup.add_argument("--directory", type=Path, required=True)
+    handoff_cleanup.add_argument("--token", required=True)
+    handoff_cleanup.add_argument("--confirm", action="store_true")
+    handoff_cleanup.add_argument("--json", action="store_true")
     candidate = subparsers.add_parser("candidate")
     candidate_commands = candidate.add_subparsers(dest="candidate_command", required=True)
     candidate_import = candidate_commands.add_parser("import")
@@ -683,6 +752,43 @@ def main(argv: list[str] | None = None) -> int:
                 )
         elif operation == "plan":
             payload = _plan(root, int(args.limit), args.status)
+        elif operation == "batch":
+            if args.batch_command == "create":
+                if not args.confirm:
+                    _confirmation("batch create")
+                job_refs = [str(value) for value in args.job_ref]
+                if len(job_refs) > 1 and not _canary_completed(root):
+                    raise CliError(
+                        "canary_required",
+                        "batch creation requires a successful current-version canary",
+                        "run one confirmed no-publish canary before creating a batch",
+                    )
+                planned = fixed_plan(
+                    root,
+                    job_refs=job_refs,
+                    required_status=args.status,
+                )
+                data = create_batch(
+                    root,
+                    planned=planned,
+                    requested_status=args.status,
+                )
+                payload = success(
+                    "batch_create",
+                    data,
+                    summary=f"fixed {data['item_count']} jobs without implicit replacement",
+                )
+            else:
+                data = batch_status(root, str(args.batch_ref))
+                payload = success(
+                    f"batch_{args.batch_command}",
+                    data,
+                    summary=(
+                        "fixed batch state reconciled"
+                        if args.batch_command == "status"
+                        else "fixed batch resume actions reconciled"
+                    ),
+                )
         elif operation == "packet":
             data = export_packet(root, str(args.job_ref))
             payload = success(
@@ -690,6 +796,46 @@ def main(argv: list[str] | None = None) -> int:
                 data,
                 summary="semantic packet exported without model execution",
             )
+        elif operation == "handoff":
+            if args.handoff_command == "materialize":
+                if not args.confirm:
+                    _confirmation("handoff materialize")
+                data = materialize_handoff(root, str(args.job_ref), args.directory)
+                payload = success(
+                    "handoff_materialize",
+                    data,
+                    summary="semantic worker handoff materialized outside the private instance",
+                )
+            elif args.handoff_command == "ingest":
+                data = ingest_handoff(root, str(args.job_ref), args.directory)
+                payload = success(
+                    "handoff_ingest",
+                    data,
+                    summary="isolated candidate ingested through deterministic gates",
+                )
+            elif args.handoff_command == "repair-contract":
+                data = materialize_handoff_repair_contract(
+                    root, str(args.job_ref), args.directory
+                )
+                payload = success(
+                    "handoff_repair_contract",
+                    data,
+                    summary="bounded repair contract attached to the isolated handoff",
+                )
+            else:
+                if not args.confirm:
+                    _confirmation("handoff cleanup")
+                data = cleanup_handoff(
+                    root,
+                    str(args.job_ref),
+                    args.directory,
+                    str(args.token),
+                )
+                payload = success(
+                    "handoff_cleanup",
+                    data,
+                    summary="verified semantic handoff removed and assignment released",
+                )
         elif operation == "candidate":
             if args.candidate_command == "import":
                 data = import_candidate(root, str(args.job_ref), args.input)

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://douyin-knowledge.local/schemas/batch-state-v1.schema.json",
+  "title": "Douyin Knowledge Fixed Batch v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "batch_ref",
+    "created_at",
+    "requested_status",
+    "items"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "batch_ref": { "type": "string", "pattern": "^batch-[a-f0-9]{20}$" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "requested_status": {
+      "type": ["string", "null"],
+      "enum": ["new", "failed", "incomplete", "downloaded", "analyzed", null]
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["job_ref", "starting_status", "position"],
+        "properties": {
+          "job_ref": {
+            "type": "string",
+            "pattern": "^aweme-[a-f0-9]{20}$"
+          },
+          "starting_status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "processing",
+              "downloaded",
+              "analyzed",
+              "completed",
+              "failed",
+              "incomplete"
+            ]
+          },
+          "position": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

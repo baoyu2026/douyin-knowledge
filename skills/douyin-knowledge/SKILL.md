@@ -1,6 +1,6 @@
 ---
 name: douyin-knowledge
-description: Convert a user's own Douyin favorites into a private, reconciled local knowledge library with a user-chosen human-readable results archive, using the douyin-knowledge JSON CLI, local ASR/OCR, bounded semantic JSON candidates, deterministic validation, Obsidian publication, checkpoints, legacy-result migration and verified cleanup, and post-publication correction. Use when the user asks to configure or organize where Douyin results are stored, migrate or clean up historical results, log in to Douyin, sync favorites or 收藏, process one or a small batch of saved videos, resume a failed item, inspect or correct published knowledge, publish to the results archive/Obsidian, inspect pipeline status, or operate an installed douyin-knowledge release from Codex or another host that has passed the documented capability gate.
+description: Convert a user's own Douyin favorites into a private, reconciled local knowledge library with fixed resumable batches, isolated semantic handoffs, local ASR/OCR, bounded semantic JSON candidates, deterministic validation, a user-chosen human-readable results archive, Obsidian publication, legacy-result migration, and post-publication correction. Use when the user mentions the 抖音项目 or douyin-knowledge project, asks to resume or continue its development, configure or organize where results are stored, migrate or clean up historical results, log in to Douyin, sync favorites or 收藏, process one or a small batch of saved videos, resume a failed item or batch, inspect or correct published knowledge, publish to the results archive/Obsidian, inspect pipeline status, or operate an installed release from Codex or another host that has passed the documented capability gate.
 ---
 
 # Douyin Knowledge
@@ -8,6 +8,15 @@ description: Convert a user's own Douyin favorites into a private, reconciled lo
 Operate the installed `douyin-knowledge` CLI as the authority. Keep account access,
 media, analysis, correction, publication state, and credentials in the user's private
 instance directory. Never treat an assistant message as completion evidence.
+
+## Resume Local Development
+
+When the user mentions the Douyin project or asks to continue its development, first
+check for `PROJECT-MEMORY.local.md` beside this file. If it exists, read it completely
+before inspecting or changing the repository. Treat it as machine-local continuation
+context, verify dynamic Git and runtime state before relying on it, and never package,
+commit, or expose its machine-specific paths. If it is absent, continue from the
+portable Skill and repository documentation.
 
 ## Start Safely
 
@@ -50,10 +59,16 @@ instance directory. Never treat an assistant message as completion evidence.
   then run a no-publish canary with the same status filter within the user's authorized
   scope. A new registry item can still have cached media from an earlier probe; require
   both returned reuse flags to be false before describing the execution as a cold run.
-- For semantic work, export one packet and assign it to exactly one worker. That
-  same worker must personally read every evidence chunk, inspect every visual, and
-  atomically write one pure JSON candidate; never split or re-delegate a partially
-  reviewed packet. Import it and check authoritative status. Read
+- For two to five items, create one fixed batch from the exact `job_ref` values
+  returned by `plan`, after a successful current-version canary. Use `batch status`
+  or `batch resume` to reconcile its next actions. Never add a replacement when the
+  collection changes; a removed favorite blocks only its original fixed item.
+- For semantic work, use `handoff materialize` to place only the current sanitized
+  packet in a dedicated external directory. Assign that directory to exactly one
+  worker. That same worker must personally read every evidence chunk, inspect every
+  visual, and atomically write one pure JSON candidate; never split or re-delegate a
+  partially reviewed packet. Use `handoff ingest`, check authoritative status, then
+  use the returned token with `handoff cleanup`. Read
   [references/semantic-worker-protocol.md](references/semantic-worker-protocol.md).
 - After successful candidate import, do not stop for pre-publication human approval.
   The candidate is publishable only after deterministic schema, provenance, privacy,
@@ -108,6 +123,8 @@ instance directory. Never treat an assistant message as completion evidence.
   an explicit status when state matters, and stable `job_ref` values.
 - Limit execution to one CPU analysis, at most two semantic workers, and one serial
   publisher. Default batch size to one; do not exceed five after a successful canary.
+- Treat `status.resources` and batch recommendations as the capacity authority. Do
+  not launch work outside the fixed batch or duplicate an assigned `job_ref`.
 - Stop after the same failure occurs twice. Preserve the checkpoint and state the
   required user action.
 - Do not bypass schema, provenance, privacy, evidence, journal,
@@ -120,3 +137,10 @@ instance directory. Never treat an assistant message as completion evidence.
 Read [references/host-adapters.md](references/host-adapters.md) before claiming host
 support. A host that cannot reliably write the candidate file is candidate-only or
 unsupported; do not imply end-to-end support.
+
+For an MCP-capable non-Codex host, also read
+[references/agent-gateway.md](references/agent-gateway.md). Use the installed
+`scripts/invoke-mcp.ps1` only as a local `stdio` candidate gateway. Its capability
+response is authoritative: the current gateway does not expose login, sync, local
+analysis, publication, or reconciliation. Do not compensate by granting arbitrary
+shell or private-filesystem access to the host.

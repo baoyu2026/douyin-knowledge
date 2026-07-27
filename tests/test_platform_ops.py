@@ -296,6 +296,12 @@ def test_run_job_reuses_bound_download_and_stops_exactly_there(tmp_path: Path) -
     assert result["download_reused"] is True
     assert result["model_calls"] == 0
     assert result["publish"] is False
+    timing = result["stage_timings"]["download"]
+    assert timing["status"] == "completed"
+    assert timing["reused"] is True
+    assert timing["started_at"]
+    assert timing["completed_at"]
+    assert timing["duration_seconds"] >= 0
     checkpoint = json.loads(
         (tmp_path / "data" / "tasks" / job_ref / "run-checkpoint.json").read_text(
             encoding="utf-8"
@@ -336,6 +342,40 @@ def test_run_job_rejects_active_lease_and_quarantines_stale_lock(
     os.utime(lock, (old, old))
     assert run_job(tmp_path, job_ref=job_ref, stop_after="download")["status"] == "downloaded"
     assert len(list((tmp_path / "quarantine" / "run-locks" / job_ref).glob("*.lock"))) == 1
+
+
+def test_run_job_enforces_one_global_cpu_slot_and_recovers_stale_capacity(
+    tmp_path: Path,
+) -> None:
+    job_ref = "aweme-0123456789abcdefabcd"
+    database = tmp_path / "data" / "knowledge.db"
+    database.parent.mkdir()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE collection_items("
+            "source_id TEXT, job_id TEXT, status TEXT, last_position INTEGER)"
+        )
+        connection.execute(
+            "INSERT INTO collection_items VALUES ('private-source', ?, 'downloaded', 1)",
+            (job_ref,),
+        )
+    source = tmp_path / "data" / "jobs" / job_ref / "source.mp4"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"local media")
+    capacity = tmp_path / "data" / "run-leases" / "cpu.lock"
+    capacity.parent.mkdir(parents=True)
+    capacity.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(CliError) as active:
+        run_job(tmp_path, job_ref=job_ref, stop_after="download")
+    assert active.value.code == "cpu_capacity_reached"
+    assert not (tmp_path / "data" / "tasks" / job_ref / "run.lock").exists()
+
+    old = capacity.stat().st_mtime - 3 * 60 * 60
+    os.utime(capacity, (old, old))
+    assert run_job(tmp_path, job_ref=job_ref, stop_after="download")["status"] == "downloaded"
+    quarantined = tmp_path / "quarantine" / "run-locks" / "cpu"
+    assert len(list(quarantined.glob("*.lock"))) == 1
 
 
 def test_model_install_verifies_bounded_local_snapshot(

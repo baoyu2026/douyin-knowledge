@@ -34,12 +34,19 @@ instance without putting either absolute path in conversational output.
 <invoke> migrate results --confirm --json
 <invoke> migrate cleanup --confirm --json
 <invoke> plan --limit 1 [--status <new|failed|incomplete|downloaded|analyzed>] --json
+<invoke> batch create --job-ref <ref> [--job-ref <ref> ...] [--status <status>] --confirm --json
+<invoke> batch status --batch-ref <ref> --json
+<invoke> batch resume --batch-ref <ref> --json
 <invoke> login --confirm --json
 <invoke> model install --name small --confirm --json
 <invoke> sync --confirm --json
 <invoke> canary --limit 1 [--status <new|failed|incomplete|downloaded|analyzed>] --no-publish --confirm --json
 <invoke> run --job-ref <ref> --stop-after packet --confirm --json
 <invoke> packet export --job-ref <ref> --json
+<invoke> handoff materialize --job-ref <ref> --directory <empty-external-dir> --confirm --json
+<invoke> handoff ingest --job-ref <ref> --directory <external-dir> --json
+<invoke> handoff repair-contract --job-ref <ref> --directory <external-dir> --json
+<invoke> handoff cleanup --job-ref <ref> --directory <external-dir> --token <token> --confirm --json
 <invoke> candidate import --job-ref <ref> --input <file> --json
 <invoke> candidate repair-contract --job-ref <ref> --json
 # Optional post-publication audit/correction records:
@@ -116,6 +123,17 @@ of accepting an analyzed collection item. This filter does not assert that media
 analysis files are absent: require `download_reused=false` and
 `analysis_reused=false` in the run result before claiming a cold run.
 
+`batch create` records exactly one to five supplied job references. More than one
+requires a successful canary from the installed version. `batch status` and
+`batch resume` are read-only reconciliation views: they report stages, timings,
+verified completion, resource capacity, and the next single-job actions. Execute
+those actions through the documented `run`, `handoff`, and `publish` commands. Never
+use a dynamic next-item loop or replace a fixed job after a later collection sync.
+
+`status.resources` reports the global one-CPU, two-semantic-slot, and one-publisher
+capacity. `publication_drift_count` reports drift already recorded in the journal;
+run `reconcile` to perform a fresh target check.
+
 The CLI permits local analysis to run for up to two hours. The host invocation must
 also allow at least two hours, or use a session that can yield and later resume. A
 host timeout does not prove that the child process stopped. Run `status` first: if
@@ -135,6 +153,18 @@ change the candidate or publication limit: `visual_evidence` selects 3 to 8 conc
 and only those referenced frames are copied to the results archive and Obsidian. New
 candidates map every selected frame to an argument step so the image is embedded beside the
 claim it supports; legacy candidates without placement retain the compact gallery fallback.
+
+Use the `handoff` commands for delegated semantic work. `materialize` accepts
+only a new or empty directory outside the private instance, copies the sanitized
+packet atomically, and returns a cleanup token without storing that token in the
+bundle. Give the worker only that directory. `ingest` verifies the exact file list,
+hashes, current packet, and candidate before using the normal deterministic import
+gates. After a repairable rejection, run `candidate repair-contract`, then `handoff
+repair-contract` to attach that bounded contract to the existing hash-protected
+handoff manifest. The same worker may edit only `content` once and must revalidate
+every listed invariant before the second ingest attempt. `cleanup` removes only the verified handoff and is retryable with the same
+token after an interrupted partial cleanup. At most two unfinished handoffs and only
+one unfinished handoff per job are allowed.
 
 ## Scoped Authorization
 

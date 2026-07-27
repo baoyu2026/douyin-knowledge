@@ -44,6 +44,9 @@ model-cache/
 tasks/
 task-history/
 
+# Machine-local project continuation memory
+skills/douyin-knowledge/PROJECT-MEMORY.local.md
+
 # Databases, media, model artifacts, and generated candidates
 *.db
 *.db-*

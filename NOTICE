@@ -6,8 +6,9 @@ distributed under the MIT License. Its license is retained at
 vendor/douyin-downloader/LICENSE.
 
 Runtime dependencies include Playwright, faster-whisper, RapidOCR, ONNX Runtime,
-OpenCV, FFmpeg integration, aiohttp, httpx, PyYAML, Pillow, NumPy, Rich, and their
-transitive dependencies. Those components remain under their respective licenses.
+OpenCV, FFmpeg integration, the official MCP Python SDK, aiohttp, httpx, PyYAML,
+Pillow, NumPy, Rich, and their transitive dependencies. Those components remain
+under their respective licenses.
 
 No browser runtime, FFmpeg binary, ASR/OCR model, Cookie, media, database, private
 Library, or generated knowledge artifact is included in this repository or release.

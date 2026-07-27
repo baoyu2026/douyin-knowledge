@@ -42,32 +42,36 @@ class _JobLease:
         self.root = root
         self.job_ref = job_ref
         self.path = root / "data" / "tasks" / job_ref / "run.lock"
-        self.acquired = False
+        self.capacity_path = root / "data" / "run-leases" / "cpu.lock"
+        self.acquired_paths: list[Path] = []
 
-    def __enter__(self) -> _JobLease:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    def _quarantine_if_stale(self, path: Path, *, scope: str) -> None:
         try:
-            age = time.time() - self.path.stat().st_mtime
+            age = time.time() - path.stat().st_mtime
         except FileNotFoundError:
-            age = 0
-        if age > STALE_LEASE_SECONDS:
-            digest = "unknown"
-            try:
-                digest = hashlib.sha256(self.path.read_bytes()).hexdigest()
-            except OSError:
-                pass
-            quarantine = self.root / "quarantine" / "run-locks" / self.job_ref
-            quarantine.mkdir(parents=True, exist_ok=True)
-            try:
-                os.replace(self.path, quarantine / f"{digest}.lock")
-            except FileNotFoundError:
-                pass
+            return
+        if age <= STALE_LEASE_SECONDS:
+            return
+        digest = "unknown"
         try:
-            descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            pass
+        quarantine = self.root / "quarantine" / "run-locks" / scope
+        quarantine.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(path, quarantine / f"{digest}.lock")
+        except FileNotFoundError:
+            pass
+
+    def _acquire(self, path: Path, *, code: str, message: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError as exc:
             raise CliError(
-                "run_locked",
-                "the selected job already has an active run lease",
+                code,
+                message,
                 "wait for the active run or inspect status before retrying",
                 retryable=True,
             ) from exc
@@ -78,12 +82,33 @@ class _JobLease:
             )
         finally:
             os.close(descriptor)
-        self.acquired = True
+        self.acquired_paths.append(path)
+
+    def __enter__(self) -> _JobLease:
+        self._quarantine_if_stale(self.path, scope=self.job_ref)
+        self._quarantine_if_stale(self.capacity_path, scope="cpu")
+        try:
+            self._acquire(
+                self.path,
+                code="run_locked",
+                message="the selected job already has an active run lease",
+            )
+            self._acquire(
+                self.capacity_path,
+                code="cpu_capacity_reached",
+                message="another job already owns the single CPU analysis slot",
+            )
+        except CliError:
+            for path in reversed(self.acquired_paths):
+                path.unlink(missing_ok=True)
+            self.acquired_paths.clear()
+            raise
         return self
 
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
-        if self.acquired:
-            self.path.unlink(missing_ok=True)
+        for path in reversed(self.acquired_paths):
+            path.unlink(missing_ok=True)
+        self.acquired_paths.clear()
 
 
 def _load_checkpoint(path: Path, job_ref: str) -> dict[str, Any]:
@@ -119,11 +144,25 @@ def _complete_stage(
     *,
     reused: bool,
 ) -> None:
-    checkpoint.setdefault("stages", {})[stage] = {
-        "status": "completed",
-        "reused": reused,
-        "completed_at": _now(),
-    }
+    completed_at = _now()
+    current = checkpoint.setdefault("stages", {}).setdefault(stage, {})
+    started_at = current.get("started_at")
+    duration_seconds = None
+    if isinstance(started_at, str):
+        try:
+            started = datetime.fromisoformat(started_at)
+            completed = datetime.fromisoformat(completed_at)
+            duration_seconds = round(max(0.0, (completed - started).total_seconds()), 3)
+        except ValueError:
+            duration_seconds = None
+    current.update(
+        {
+            "status": "completed",
+            "reused": reused,
+            "completed_at": completed_at,
+            "duration_seconds": duration_seconds,
+        }
+    )
     checkpoint.update({"status": "running", "current_stage": stage, "error": None})
     failures = checkpoint.setdefault("failures", {})
     for key in [key for key in failures if key.startswith(f"{stage}:")]:
@@ -135,11 +174,16 @@ def _complete_stage(
 def _start_stage(
     checkpoint_path: Path, checkpoint: dict[str, Any], stage: str
 ) -> None:
+    started_at = _now()
+    checkpoint.setdefault("stages", {})[stage] = {
+        "status": "running",
+        "started_at": started_at,
+    }
     checkpoint.update(
         {
             "status": "running",
             "current_stage": stage,
-            "started_at": _now(),
+            "started_at": started_at,
             "error": None,
         }
     )
@@ -389,6 +433,7 @@ def run_job(
                     "error": None,
                 }
             )
+            result["stage_timings"] = checkpoint.get("stages", {})
             _atomic_json(checkpoint_path, checkpoint)
             return result
         except CliError as exc:

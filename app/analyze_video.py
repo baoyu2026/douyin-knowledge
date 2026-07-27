@@ -577,10 +577,35 @@ def extract_keyframes(
     selected_indices: list[int] = []
     selection_reasons: dict[int, str] = {}
     for target_index, target in enumerate(targets):
-        candidate_index = min(
+        candidates_by_distance = sorted(
             range(len(candidates)),
-            key=lambda index: (abs(float(candidates[index]["timestamp"]) - target), index),
+            key=lambda index: (
+                abs(float(candidates[index]["timestamp"]) - target),
+                -float(candidates[index]["scene_score"]),
+                index,
+            ),
         )
+        endpoint = target_index in {0, len(targets) - 1}
+        candidate_index = candidates_by_distance[0]
+        if not endpoint:
+            unique_nearby = next(
+                (
+                    index
+                    for index in candidates_by_distance
+                    if index not in selected_indices
+                    and all(
+                        hamming_ratio(
+                            candidates[index]["signature"], candidates[selected]["signature"]
+                        )
+                        > config.duplicate_hamming_ratio
+                        for selected in selected_indices
+                    )
+                ),
+                None,
+            )
+            if unique_nearby is None:
+                continue
+            candidate_index = unique_nearby
         if candidate_index not in selected_indices:
             selected_indices.append(candidate_index)
         if target_index == 0:
@@ -607,11 +632,32 @@ def extract_keyframes(
         if distances and min(distances) <= config.duplicate_hamming_ratio:
             continue
         selected_indices.append(candidate_index)
-    for candidate_index in ranked:
-        if len(selected_indices) >= config.max_keyframes:
+    minimum_output = min(config.max_keyframes, len(candidates), 3)
+    fallback_targets = (
+        []
+        if minimum_output == 0
+        else (
+            [candidate_tail / 2]
+            if minimum_output == 1
+            else [index * candidate_tail / (minimum_output - 1) for index in range(minimum_output)]
+        )
+    )
+    for target in fallback_targets:
+        if len(selected_indices) >= minimum_output:
             break
-        if candidate_index not in selected_indices:
+        if any(
+            abs(float(candidates[index]["timestamp"]) - target) < 1e-6
+            for index in selected_indices
+        ):
+            continue
+        candidate_index = min(
+            (index for index in range(len(candidates)) if index not in selected_indices),
+            key=lambda index: (abs(float(candidates[index]["timestamp"]) - target), index),
+            default=None,
+        )
+        if candidate_index is not None:
             selected_indices.append(candidate_index)
+            selection_reasons.setdefault(candidate_index, "minimum_coverage")
 
     selected_indices.sort(key=lambda index: float(candidates[index]["timestamp"]))
     selected = [candidates[index] for index in selected_indices]
@@ -681,6 +727,7 @@ def extract_keyframes(
         "output_limit": config.max_keyframes,
         "output_limit_reached": len(records) >= config.max_keyframes,
         "candidates_omitted": max(0, len(candidates) - len(records)),
+        "duplicate_backfill_floor": minimum_output,
         "selected_count": len(records),
         "coverage_target_count": len(targets),
         "coverage_targets_met": len(

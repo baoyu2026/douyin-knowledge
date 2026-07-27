@@ -1,4 +1,4 @@
 interface:
   display_name: "Douyin Knowledge"
-  short_description: "Organize Douyin favorites and migrate legacy results safely"
-  default_prompt: "Use $douyin-knowledge to configure my results folder, migrate any legacy results safely, process one Douyin favorite, and finish only after Obsidian reconciliation succeeds."
+  short_description: "Fixed Douyin batches with reconciled Obsidian publication"
+  default_prompt: "Use $douyin-knowledge to process a fixed batch of my Douyin favorites and finish only after verified Obsidian publication."

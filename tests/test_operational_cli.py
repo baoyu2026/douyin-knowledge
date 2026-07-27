@@ -308,7 +308,7 @@ def test_confirmed_publish_accepts_staged_candidate_without_review(
     assert reviews["data"]["items"] == []
     note = next((vault / "40-Resources" / "抖音收藏").rglob("*.md"))
     document = note.read_text(encoding="utf-8")
-    assert "review_status: unreviewed" in document
+    assert "review_status: optional_unchecked" in document
     assert "evidence_status: verified" in document
     with sqlite3.connect(tmp_path / "data" / "knowledge.db") as connection:
         assert connection.execute(

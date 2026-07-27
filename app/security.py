@@ -261,14 +261,14 @@ def harden_private_project_directory(root: Path, path: Path) -> None:
     if os.name != "nt":
         path.chmod(0o700)
         return
-    script = root / "scripts" / "harden-acl.ps1"
-    if not script.is_file():
-        script = Path(__file__).resolve().parents[1] / "scripts" / "harden-acl.ps1"
+    script = Path(__file__).resolve().parents[1] / "scripts" / "harden-acl.ps1"
     if not script.is_file():
         resource = importlib.resources.files("douyin_knowledge").joinpath(
             "resources", "harden-acl.ps1"
         )
         script = Path(str(resource))
+    if not script.is_file():
+        script = root / "scripts" / "harden-acl.ps1"
     if not script.is_file():
         raise GateError("缺少 ACL 加固脚本", reason="acl_hardening_script_missing")
     completed = subprocess.run(

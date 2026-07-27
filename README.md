@@ -2,10 +2,11 @@
 
 把自己账号中的抖音收藏转换为本地、可复核、可恢复的知识库，发布到 Obsidian 并完成确定性对账。
 
-项目由两部分组成：
+项目由三部分组成：
 
 - `douyin-knowledge` CLI：负责登录、收藏同步、视频下载、本地 ASR/OCR、关键帧提取、状态管理、校验和发布。
-- `douyin-knowledge` Skill：让 Codex 按安全工作流调用 CLI、阅读证据、生成知识稿，并在发布前等待确认。
+- `douyin-knowledge` Skill：让 Codex 按安全工作流调用 CLI、阅读证据、生成知识稿，并把用户对固定任务的完整请求作为一次范围授权。
+- `douyin-knowledge` Agent Gateway：通过本地 MCP `stdio` 向其他 Agent 提供受限的候选生成通道，CLI 仍是状态和校验权威。
 
 默认不会批量下载、调用额外的远程模型或发布内容。AI 不直接操作数据库，也不会绕过登录、验证码、限流或平台保护。
 
@@ -15,8 +16,10 @@
 - 本地执行语音识别和画面文字识别。
 - 扫描完整视频后选择关键帧，而不是只分析视频开头或固定片段。
 - 将完整的脱敏 ASR、OCR、时间线和关键帧分块交给语义工作流。
+- 将 1-5 条任务固定成可恢复批次，收藏变化后也不自动换任务。
+- 通过隔离交接目录限制语义 worker 只能读取当前脱敏证据包。
 - 生成结构化知识草稿，经过 schema、来源、时效性和完整性校验。
-- 强制区分“执行分析”和“发布”两类确认；内部草稿不设人工批准门禁。
+- 一次明确请求可授权同一固定范围的完整流程；内部草稿不设人工批准门禁。
 - 使用 SQLite、检查点和发布 journal 恢复中断任务，并对账 Obsidian 结果。
 - 将旧版 `library` 成果复制、校验并整理到用户指定的人类成果库。
 
@@ -35,7 +38,7 @@
 - 用户自己的抖音账号
 - Obsidian Vault（仅发布时需要）
 
-Codex + Windows + PowerShell 已完成发布级端到端验证。OpenClaw 尚未完成当前版本的发布级端到端验证，只能在通过[宿主能力检查](skills/douyin-knowledge/references/host-adapters.md)后按实际能力使用，不应视为完整支持。
+Codex + Windows + PowerShell 已完成发布级端到端验证。通用 MCP Gateway 已完成协议级冒烟测试，但当前只开放 candidate-only 模式。WorkBuddy、OpenClaw 和其他具体宿主仍需分别通过[宿主能力检查](skills/douyin-knowledge/references/host-adapters.md)，不能仅凭支持 MCP 就视为完整端到端支持。
 
 ## 快速安装
 
@@ -66,6 +69,52 @@ Set-Location douyin-knowledge
 ```
 
 安装完成后重新打开 Codex 会话，使新 Skill 被发现。
+
+## 接入其他 Agent
+
+安装后会同时提供 `douyin-knowledge-mcp` 本地 MCP 服务。支持 MCP 的 Agent
+应通过已安装 Skill 中的 `scripts/invoke-mcp.ps1` 以 `stdio` 启动，不要把私有实例
+路径写进提示词，也不要给 Agent 任意 PowerShell 或整个文件系统权限。
+
+当前 MCP Gateway 的范围是 candidate-only：本地 CLI 先把固定视频处理到证据包，
+外部 Agent 通过 MCP 读取完整脱敏文本和全部关键帧、提交标准候选 JSON，再由本地
+CLI 进行确定性导入。登录、同步、两小时分析、成果库发布和 Obsidian 对账仍由已验证
+的本地编排流程负责。
+
+详细工具、调用顺序和通用 MCP 配置见
+[Agent Gateway](skills/douyin-knowledge/references/agent-gateway.md)。每个新宿主都必须先用
+无真实账号数据的夹具验证 JSON 完整性、图片查看、目录隔离和原子提交。
+
+### WorkBuddy 上传包
+
+WorkBuddy 用户先安装本地后端，不必安装 Codex Skill：
+
+```powershell
+git clone https://github.com/baoyu2026/douyin-knowledge.git
+Set-Location douyin-knowledge
+.\scripts\bootstrap.ps1
+.\scripts\export-workbuddy-bundle.ps1
+```
+
+导出器会在“下载”目录创建 `douyin-knowledge-workbuddy` 文件夹，其中只有两个需要在
+WorkBuddy 界面操作的文件：
+
+- 在“技能”页面上传 `douyin-knowledge.zip`；
+- 在“MCP”页面导入 `douyin-knowledge.mcp.json`。
+
+MCP 配置只绑定这台电脑上的 Gateway 启动脚本，不包含私有实例路径、Cookie、数据库或
+媒体。上传 Skill 只允许调用 `mcp__douyin-knowledge`，不授予任意 Shell、文件系统或网络
+工具。导入后重新打开 WorkBuddy，先调用 `douyin_capabilities`；必须看到
+`mode=candidate-only`，再用无真实数据夹具完成看图、完整读取和原子提交测试。
+
+发布者可以指定输出目录生成 GitHub Release 附件：
+
+```powershell
+.\scripts\export-workbuddy-bundle.ps1 -OutputDirectory .\dist\workbuddy
+```
+
+ZIP 可以跨用户分发；MCP JSON 含生成机器上的本地启动脚本路径，因此每位使用者都应在
+自己的电脑上重新导出，不能把某个人生成的 MCP JSON 当作通用配置分享。
 
 ## 成果文件放在哪里
 
@@ -148,7 +197,7 @@ Skill 会先说明本次固定范围、外部调用、本地耗时、写入目�
 
 只有登录/CAPTCHA、新的写入目标、无法自动裁决的冲突或不可逆清理才会重新询问。候选导入不算完成，写入但未对账也不算完成；只有发布状态为 `accepted` 时才会把视频标为 `completed`。
 
-人工检查发生在发布之后。每篇新 Obsidian 笔记都会标记 `review_status: unreviewed`，AI 对证据的核验结果另记为 `evidence_status`。`uploaded_at` 保存首次上传到 Obsidian 的带时区时间，可用于按上传先后排序；同一笔记后续纠错重发不会改变它。你直接在 Obsidian 阅读；发现问题后告诉 Skill 即可，它会把这次反馈作为纠错请求，保留历史候选和 Obsidian 手工区，针对同一条视频生成修正版并重新发布对账。你不需要再走单独的 `approve/reject` 流程。
+人工检查发生在发布之后，而且完全可选。每篇新 Obsidian 笔记都会标记 `review_status: optional_unchecked`，表示“用户尚未阅读”，不表示任务未完成；AI 对证据的核验结果另记为 `evidence_status`。`uploaded_at` 保存首次上传时间，`updated_at` 保存最近一次发布或纠错时间，两者都带时区。你直接在 Obsidian 阅读；发现问题后告诉 Skill 即可，它会把这次反馈作为纠错请求，保留历史候选和 Obsidian 手工区，针对同一条视频生成修正版并重新发布对账。你不需要再走单独的 `approve/reject` 流程，成果库也不再生成“待人工复核”任务清单。
 
 ## 手动检查
 
@@ -166,6 +215,8 @@ $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 & $DK sync --confirm --json
 & $DK plan --limit 1 --status new --json
 & $DK canary --limit 1 --status new --no-publish --confirm --json
+& $DK batch create --job-ref <ref-1> --job-ref <ref-2> --status new --confirm --json
+& $DK batch status --batch-ref <batch-ref> --json
 ```
 
 - `login` 打开交互式浏览器，Cookie 只保存在私有实例。
@@ -173,6 +224,7 @@ $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 - `model install` 安装本地 ASR 模型。
 - `plan` 返回稳定的任务引用，不修改内容。
 - `canary` 只处理一条，并停在语义证据包；它不调用额外模型，也不发布。
+- `batch create` 固定 1-5 条任务；`batch status/resume` 只对账原范围并给出下一步，不会补入新收藏。
 - `migrate results` 只复制并校验旧成果，保留旧目录，不重新处理视频。
 - `migrate cleanup` 只在迁移完整且新副本重新验证通过后永久删除旧成果。
 
@@ -192,12 +244,14 @@ $DK = (Resolve-Path .\scripts\douyin-knowledge.ps1).Path
 
 这是“快照对账 + 软删除”策略。当前不会自动清理长期取消收藏的媒体，因此私有实例的磁盘占用可能随时间增长。
 
+已经创建的批次使用固定任务清单。之后新增收藏会留给下一批；取消收藏会把原任务标为阻塞，但不会用别的视频补位。每批最多 5 条，程序全局只允许 1 条 CPU 分析、2 个语义任务和 1 条串行发布，`status` 会报告实际占用。
+
 ## 内容完整性
 
-1.1 版本针对“只截到部分视频内容”的问题增加了完整性约束：
+当前版本针对“只截到部分视频内容”的问题增加了完整性约束：
 
 - 优先选择平台返回的最高有效分辨率档位，并检查视频尾部可解码性和 ASR 处理时长。
-- 每 0.2 秒有界采样到视频尾帧，再根据首尾覆盖、时间分布、场景变化和去重选择最多 40 张供语义检查的候选关键帧。
+- 每 0.2 秒有界采样到视频尾帧，再根据首尾覆盖、时间分布、场景变化和去重选择最多 40 张供语义检查的候选关键帧。时间覆盖选帧本身也会避开近重复画面；静态视频只保留首、中、尾最低覆盖，不再为了凑满上限输出重复帧。
 - 40 张上限限制语义 worker 需要查看的候选画面数量，不会让视频扫描在中途提前结束；最终成果只发布其中被正文引用的 3-8 张。
 - 摘要 packet 会报告每类证据的纳入数量和截断状态。
 - 完整脱敏 ASR、OCR 和时间线会以有界 JSON 分块导出；语义 worker 必须读取全部分块。
@@ -277,7 +331,7 @@ git pull
 .\.venv\Scripts\python.exe -m compileall -q app src
 .\.venv\Scripts\python.exe -m build
 .\scripts\test-distribution.ps1 `
-  -WheelPath .\dist\douyin_knowledge-1.4.6-py3-none-any.whl `
+  -WheelPath .\dist\douyin_knowledge-1.6.0-py3-none-any.whl `
   -Python .\.venv\Scripts\python.exe
 ```
 

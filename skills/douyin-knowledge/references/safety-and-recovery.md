@@ -14,6 +14,17 @@ staged, or already deleted. Do not move or delete the staging directory manually
 Cleanup is permitted only after every authoritative destination and registry binding
 has been reverified; it never deletes the migration checkpoint or publication journal.
 
+For an interrupted fixed batch, run `batch status` or `batch resume` with the same
+`batch_ref`. Resume only the recommended original `job_ref`; never replace an item
+because favorites were added or removed after batch creation. A batch is complete
+only when every fixed job's latest publication is `accepted` and all targets are
+verified.
+
+For an interrupted semantic handoff, keep its directory and cleanup token. Retry
+`handoff ingest` after correcting an atomic candidate, or retry `handoff cleanup`
+with the same token. Do not manually remove bundle files or edit the private
+assignment registry. A partial cleanup is designed to resume safely.
+
 For `results_migration_entry_incomplete`, do not retry the same migration blindly.
 Run read-only `migrate inspect` and use only its issue counts to determine whether a
 legacy-format compatibility repair is required. Entries reported as `repairable`
@@ -48,6 +59,8 @@ skip the failed stage, replace the selected `job_ref`, or bypass validation.
   `analyzed`.
 - `accepted`: SQLite integrity, privacy, and content checks passed; registry may now
   be `completed`.
+- `superseded`: a historical accepted publication retained for audit after a newer
+  accepted correction replaced it. Its recorded target state is not refreshed.
 
 Never update `completed` directly. Reconcile partial writes before retrying publish.
 Reuse the same idempotency key for the same request; a changed request needs a new key.

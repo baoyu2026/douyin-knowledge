@@ -98,7 +98,7 @@ def test_extract_audio_reports_video_without_audio_stream(
     assert not output.exists()
 
 
-def test_keyframe_selection_scans_tail_before_applying_global_limit(tmp_path: Path) -> None:
+def test_keyframe_selection_scans_tail_before_deduplicating_global_output(tmp_path: Path) -> None:
     class FakeCapture:
         def __init__(self) -> None:
             self.timestamp = 0.0
@@ -160,7 +160,7 @@ def test_keyframe_selection_scans_tail_before_applying_global_limit(tmp_path: Pa
         RuntimeDependencies(FakeCV2, np, None, None),
     )
 
-    assert len(frames) == 4
+    assert len(frames) == 3
     assert frames[0]["timestamp"] == 0.0
     assert frames[-1]["timestamp"] == 10.0
     assert coverage["sample_interval_seconds"] == 0.2
@@ -168,10 +168,83 @@ def test_keyframe_selection_scans_tail_before_applying_global_limit(tmp_path: Pa
     assert coverage["scan_reached_end"] is True
     assert coverage["tail_frame_readable"] is True
     assert coverage["candidate_count"] > 4
-    assert coverage["output_limit_reached"] is True
+    assert coverage["output_limit_reached"] is False
     assert coverage["candidates_omitted"] > 0
     assert coverage["coverage_targets_met"] == coverage["coverage_target_count"]
     assert coverage["timeline_span_ratio"] == 1.0
+
+
+def test_keyframe_selection_does_not_fill_the_limit_with_duplicate_frames(
+    tmp_path: Path,
+) -> None:
+    class StaticCapture:
+        def __init__(self) -> None:
+            self.timestamp = 0.0
+
+        def isOpened(self):
+            return True
+
+        def set(self, _property, value):
+            self.timestamp = value / 1000.0
+
+        def read(self):
+            return True, np.zeros((8, 8), dtype=np.uint8)
+
+        def release(self):
+            return None
+
+    class StaticCV2:
+        CAP_PROP_POS_MSEC = 1
+        COLOR_BGR2GRAY = 2
+        INTER_AREA = 3
+        IMWRITE_JPEG_QUALITY = 4
+
+        @staticmethod
+        def VideoCapture(_path):
+            return StaticCapture()
+
+        @staticmethod
+        def cvtColor(frame, _mode):
+            return frame
+
+        @staticmethod
+        def resize(frame, size, interpolation):
+            assert interpolation == StaticCV2.INTER_AREA
+            return np.zeros((size[1], size[0]), dtype=np.uint8)
+
+        @staticmethod
+        def absdiff(left, right):
+            return np.abs(left.astype(np.int16) - right.astype(np.int16))
+
+        @staticmethod
+        def imwrite(path, _frame, _options):
+            Path(path).write_bytes(b"jpeg")
+            return True
+
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"fixture")
+
+    frames, coverage = extract_keyframes(
+        video,
+        tmp_path / "keyframes",
+        {
+            "duration_seconds": 60.0,
+            "fps": 10.0,
+            "frame_count": 601,
+            "width": 8,
+            "height": 8,
+        },
+        AnalysisConfig(max_keyframes=40),
+        RuntimeDependencies(StaticCV2, np, None, None),
+    )
+
+    assert len(frames) == 3
+    assert frames[0]["timestamp"] == 0.0
+    assert frames[1]["timestamp"] == pytest.approx(30.0, abs=0.5)
+    assert frames[2]["timestamp"] == 60.0
+    assert coverage["output_limit_reached"] is False
+    assert coverage["candidates_omitted"] > 0
+    assert coverage["duplicate_backfill_floor"] == 3
 
 
 def test_transcribe_audio_keeps_timestamps_and_real_confidence(tmp_path: Path) -> None:

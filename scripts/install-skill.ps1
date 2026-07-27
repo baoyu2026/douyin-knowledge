@@ -3,6 +3,7 @@ param(
     [string]$Destination = "",
     [string]$InstanceRoot = "",
     [string]$CliPath = "",
+    [string]$GatewayPath = "",
     [switch]$Force
 )
 
@@ -10,11 +11,15 @@ $ErrorActionPreference = "Stop"
 $Repository = Split-Path -Parent $PSScriptRoot
 $Source = Join-Path $Repository "skills\douyin-knowledge"
 $Launcher = Join-Path $PSScriptRoot "douyin-knowledge.ps1"
+$GatewayLauncher = Join-Path $PSScriptRoot "douyin-knowledge-mcp.ps1"
 if (-not (Test-Path -LiteralPath (Join-Path $Source "SKILL.md") -PathType Leaf)) {
     throw "The bundled douyin-knowledge Skill is missing."
 }
 if (-not (Test-Path -LiteralPath $Launcher -PathType Leaf)) {
     throw "The bundled douyin-knowledge launcher is missing."
+}
+if (-not (Test-Path -LiteralPath $GatewayLauncher -PathType Leaf)) {
+    throw "The bundled douyin-knowledge MCP launcher is missing."
 }
 
 if (-not $CliPath) {
@@ -35,6 +40,27 @@ if (-not $CliPath -or -not (Test-Path -LiteralPath $CliPath -PathType Leaf)) {
     throw "The CLI entry point is unavailable. Install the package or run bootstrap first."
 }
 $CliPath = [System.IO.Path]::GetFullPath($CliPath)
+
+if (-not $GatewayPath) {
+    $SourceGateway = Join-Path $Repository ".venv\Scripts\douyin-knowledge-mcp.exe"
+    $ShareDirectory = Split-Path -Parent $Repository
+    $WheelPrefix = if ((Split-Path -Leaf $ShareDirectory) -eq "share") {
+        Split-Path -Parent $ShareDirectory
+    }
+    $WheelGateway = if ($WheelPrefix) {
+        Join-Path $WheelPrefix "Scripts\douyin-knowledge-mcp.exe"
+    }
+    if (Test-Path -LiteralPath $SourceGateway -PathType Leaf) {
+        $GatewayPath = $SourceGateway
+    }
+    elseif ($WheelGateway -and (Test-Path -LiteralPath $WheelGateway -PathType Leaf)) {
+        $GatewayPath = $WheelGateway
+    }
+}
+if (-not $GatewayPath -or -not (Test-Path -LiteralPath $GatewayPath -PathType Leaf)) {
+    throw "The MCP gateway entry point is unavailable. Install the package or run bootstrap first."
+}
+$GatewayPath = [System.IO.Path]::GetFullPath($GatewayPath)
 
 if (-not $Destination) {
     $Destination = Join-Path $HOME ".codex\skills\douyin-knowledge"
@@ -112,6 +138,8 @@ $Runtime = [ordered]@{
     schema_version = 1
     launcher = [System.IO.Path]::GetFullPath($Launcher)
     cli_path = $CliPath
+    gateway_launcher = [System.IO.Path]::GetFullPath($GatewayLauncher)
+    gateway_path = $GatewayPath
     instance_root = $InstanceRoot
 }
 $RuntimePath = Join-Path $Destination "runtime.local.json"

@@ -24,6 +24,19 @@ def private_directory_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def test_publish_rejects_a_second_concurrent_publisher(tmp_path: Path) -> None:
+    lock = tmp_path / "data" / "run-leases" / "publisher.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(CliError) as error:
+        publish_staged_job(tmp_path, job_ref="aweme-0123456789abcdefabcd")
+
+    assert error.value.code == "publisher_capacity_reached"
+    assert error.value.retryable is True
+    assert lock.is_file()
+
+
 def _write_candidate(root: Path, job_ref: str, packet_hash: str, *, title: str) -> Path:
     payload = _payload()
     payload["title"] = title

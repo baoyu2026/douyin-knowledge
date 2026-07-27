@@ -41,13 +41,14 @@ def test_windows_acl_metadata_uses_system_encoding_and_handles_empty_streams(
     assert metadata["broad_acl_identities"] == ["BUILTIN\\Users"]
 
 
-def test_harden_private_project_directory_uses_existing_acl_tool(
+def test_harden_private_project_directory_prefers_current_acl_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "root"
-    script = root / "scripts" / "harden-acl.ps1"
-    script.parent.mkdir(parents=True)
-    script.write_text("# fixture\n", encoding="utf-8")
+    stale_script = root / "scripts" / "harden-acl.ps1"
+    stale_script.parent.mkdir(parents=True)
+    stale_script.write_text("# stale fixture\n", encoding="utf-8")
+    script = Path(security.__file__).resolve().parents[1] / "scripts" / "harden-acl.ps1"
     target = root / "quarantine" / "content-drafts" / "job"
     observed: dict[str, object] = {}
 
@@ -85,6 +86,17 @@ def test_harden_private_project_directory_uses_existing_acl_tool(
     assert observed["encoding"] == locale.getencoding()
     assert observed["errors"] == "replace"
     assert observed["asserted"] == target.resolve()
+
+
+def test_acl_tool_does_not_depend_on_instance_virtual_environment() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    for script in (
+        repository / "scripts" / "harden-acl.ps1",
+        repository / "src" / "douyin_knowledge" / "resources" / "harden-acl.ps1",
+    ):
+        text = script.read_text(encoding="utf-8")
+        assert '.venv\\Scripts\\python.exe' not in text
+        assert text.count('"/remove:d"') == 2
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL integration")

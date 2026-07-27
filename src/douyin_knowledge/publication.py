@@ -58,7 +58,9 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
                 state IN ('intent', 'published_unaccepted', 'accepted')
             ),
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            superseded_at TEXT,
+            superseded_by_saga_id TEXT
         );
 
         CREATE INDEX IF NOT EXISTS publication_sagas_job_ref
@@ -93,6 +95,22 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         "VALUES (1, ?)",
         (_now(),),
     )
+    saga_columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(publication_sagas)").fetchall()
+    }
+    if "superseded_at" not in saga_columns:
+        connection.execute("ALTER TABLE publication_sagas ADD COLUMN superseded_at TEXT")
+    if "superseded_by_saga_id" not in saga_columns:
+        connection.execute(
+            "ALTER TABLE publication_sagas ADD COLUMN superseded_by_saga_id TEXT"
+        )
+    connection.execute(
+        "INSERT OR IGNORE INTO publication_schema_migrations(version, applied_at) "
+        "VALUES (2, ?)",
+        (_now(),),
+    )
+    _backfill_superseded_publications(connection)
     collection_table = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'collection_items'"
     ).fetchone()
@@ -111,6 +129,33 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             END
             """
         )
+
+
+def _backfill_superseded_publications(connection: sqlite3.Connection) -> None:
+    newer_accepted = (
+        "newer.job_ref = publication_sagas.job_ref "
+        "AND newer.state = 'accepted' AND ("
+        "newer.created_at > publication_sagas.created_at OR ("
+        "newer.created_at = publication_sagas.created_at "
+        "AND newer.saga_id > publication_sagas.saga_id))"
+    )
+    connection.execute(
+        "UPDATE publication_sagas SET "
+        "superseded_by_saga_id = ("
+        "SELECT newer.saga_id FROM publication_sagas AS newer "
+        f"WHERE {newer_accepted} "
+        "ORDER BY newer.created_at, newer.saga_id LIMIT 1), "
+        "superseded_at = ("
+        "SELECT COALESCE(acceptance.accepted_at, newer.updated_at) "
+        "FROM publication_sagas AS newer "
+        "LEFT JOIN publication_acceptances AS acceptance "
+        "ON acceptance.saga_id = newer.saga_id "
+        f"WHERE {newer_accepted} "
+        "ORDER BY newer.created_at, newer.saga_id LIMIT 1) "
+        "WHERE state = 'accepted' AND superseded_at IS NULL AND EXISTS ("
+        "SELECT 1 FROM publication_sagas AS newer "
+        f"WHERE {newer_accepted})"
+    )
 
 
 def _validate_sha256(value: str, *, field: str) -> str:
@@ -172,10 +217,15 @@ def _serialize_saga(
     *,
     reused: bool = False,
 ) -> dict[str, Any]:
+    state = (
+        "superseded"
+        if row["superseded_at"] is not None
+        else str(row["state"])
+    )
     return {
         "saga_id": str(row["saga_id"]),
         "job_ref": str(row["job_ref"]),
-        "state": str(row["state"]),
+        "state": state,
         "targets": _target_states(connection, str(row["saga_id"])),
         "reused": reused,
     }
@@ -414,6 +464,15 @@ def seal_publication_targets(
                 "publication_targets_mismatch",
                 "sealed targets must exactly match the publication intent",
             )
+        if str(saga["state"]) == "accepted":
+            for row in rows:
+                name = str(row["target_name"])
+                if str(row["expected_sha256"] or "") != normalized[name]:
+                    raise PublicationStateError(
+                        "publication_digest_conflict",
+                        "an accepted publication target cannot be resealed",
+                    )
+            return _serialize_saga(connection, saga, reused=True)
         for row in rows:
             name = str(row["target_name"])
             existing = str(row["expected_sha256"] or "")
@@ -455,9 +514,16 @@ def reconcile_publications(
                 "ORDER BY created_at, saga_id",
                 (job_ref,),
             ).fetchall()
+        latest_by_job = {
+            str(saga["job_ref"]): str(saga["saga_id"])
+            for saga in sagas
+        }
         results: list[dict[str, Any]] = []
         for saga in sagas:
             saga_id = str(saga["saga_id"])
+            if latest_by_job[str(saga["job_ref"])] != saga_id:
+                results.append(_serialize_saga(connection, saga))
+                continue
             targets = connection.execute(
                 "SELECT * FROM publication_targets WHERE saga_id = ? "
                 "ORDER BY target_name",
@@ -536,6 +602,21 @@ def accept_publication(
                 "publication_not_observed",
                 "all publication targets must be observed before acceptance",
             )
+        newer_accepted = connection.execute(
+            "SELECT 1 FROM publication_sagas WHERE job_ref = ? AND state = 'accepted' "
+            "AND (created_at > ? OR (created_at = ? AND saga_id > ?)) LIMIT 1",
+            (
+                str(saga["job_ref"]),
+                str(saga["created_at"]),
+                str(saga["created_at"]),
+                saga_id,
+            ),
+        ).fetchone()
+        if newer_accepted is not None:
+            raise PublicationStateError(
+                "publication_overtaken",
+                "a newer publication was already accepted for this job",
+            )
         if (
             not REQUIRED_ACCEPTANCE_CHECKS.issubset(checks)
             or not all(checks[name] is True for name in REQUIRED_ACCEPTANCE_CHECKS)
@@ -552,7 +633,14 @@ def accept_publication(
             (saga_id, json.dumps(checks, sort_keys=True), timestamp),
         )
         connection.execute(
-            "UPDATE publication_sagas SET state = 'accepted', updated_at = ? "
+            "UPDATE publication_sagas SET superseded_at = ?, "
+            "superseded_by_saga_id = ? WHERE job_ref = ? AND saga_id != ? "
+            "AND state = 'accepted' AND superseded_at IS NULL",
+            (timestamp, saga_id, str(saga["job_ref"]), saga_id),
+        )
+        connection.execute(
+            "UPDATE publication_sagas SET state = 'accepted', updated_at = ?, "
+            "superseded_at = NULL, superseded_by_saga_id = NULL "
             "WHERE saga_id = ?",
             (timestamp, saga_id),
         )

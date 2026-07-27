@@ -24,6 +24,29 @@ After either installation, restart the host and execute the installed Skill's
 `scripts/invoke.ps1`. Do not depend on a bare CLI command or activate a repository
 virtual environment.
 
+## WorkBuddy Upload Bundle
+
+For WorkBuddy, install the backend with `scripts/bootstrap.ps1` without
+`-InstallCodexSkill`, then run `scripts/export-workbuddy-bundle.ps1`. Upload the
+generated `douyin-knowledge.zip` in WorkBuddy's Skill UI and import the generated
+`douyin-knowledge.mcp.json` in its MCP UI.
+
+Generate the MCP JSON separately on each machine. It contains that machine's local
+Gateway launcher path but never the bound private instance path. The Skill archive
+is portable and grants only the `mcp__douyin-knowledge` tool group; it does not grant
+arbitrary shell, filesystem, or network tools.
+
+After import, restart WorkBuddy and call `douyin_capabilities`. Require
+`mode=candidate-only`, then pass the host capability gate with disposable evidence
+before using a real packet. Uploading the Skill alone does not install or connect the
+local backend.
+
+For an MCP-capable host, configure its local MCP client to start the installed
+Skill's `scripts/invoke-mcp.ps1` over `stdio`. Keep the adapter path in local host
+configuration rather than model context. Read
+[agent-gateway.md](agent-gateway.md) before enabling a non-Codex host; the current
+gateway is candidate-only and does not authorize or expose full orchestration.
+
 ## Rebinding
 
 To change the private instance, rerun `install-skill.ps1 -InstanceRoot <path>`. Do

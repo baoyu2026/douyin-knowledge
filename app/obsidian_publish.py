@@ -36,6 +36,7 @@ MANAGED_PROPERTIES = {
     "favorite_state",
     "processed_at",
     "uploaded_at",
+    "updated_at",
     "content_version",
     "cover",
     "related_notes",
@@ -395,6 +396,7 @@ def publish_to_obsidian(
         uploaded_at = _aware_datetime(existing["published_at"])
     if uploaded_at is None:
         uploaded_at = datetime.now().astimezone().replace(microsecond=0)
+    updated_at = datetime.now().astimezone().replace(microsecond=0)
     related_notes = existing_metadata.get("related_notes") or []
     managed = {
         "type": "douyin-video",
@@ -405,13 +407,14 @@ def publish_to_obsidian(
         "author": str(job.get("author") or "未知"),
         "duration_sec": int(round(float(duration))) if isinstance(duration, (int, float)) else 0,
         "quality": "high" if metadata.get("质量模式") == "高质量" else "low-review",
-        "review_status": "unreviewed",
+        "review_status": "optional_unchecked",
         "evidence_status": (
             "verified" if metadata.get("证据核验状态") == "verified" else "needs_review"
         ),
         "favorite_state": "active" if item["currently_collected"] else "uncollected",
         "processed_at": processed_at,
         "uploaded_at": uploaded_at,
+        "updated_at": updated_at,
         "content_version": 3,
         "cover": f"[[{frame_links[0]}]]",
         "related_notes": related_notes,

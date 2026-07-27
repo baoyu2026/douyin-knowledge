@@ -60,6 +60,7 @@ def test_init_is_idempotent_and_returns_safe_envelope(tmp_path: Path, capsys) ->
     assert (tmp_path / "schemas" / "cli-envelope-v1.schema.json").is_file()
     assert (tmp_path / "schemas" / "config-v1.schema.json").is_file()
     assert (tmp_path / "schemas" / "results-config-v1.schema.json").is_file()
+    assert (tmp_path / "schemas" / "batch-state-v1.schema.json").is_file()
     assert (tmp_path / "config" / "results.yml").read_text(encoding="utf-8").startswith(
         "version: 1\nroot: null\n"
     )
