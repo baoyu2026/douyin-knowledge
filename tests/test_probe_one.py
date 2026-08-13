@@ -19,6 +19,7 @@ from app.probe_one import (
     download_sample,
     execute_probe,
     extract_standard_play_url,
+    extract_standard_play_urls,
     resolve_handoff_path,
     select_snapshot_item,
     stable_job_id,
@@ -167,6 +168,43 @@ def test_fixed_job_selection_never_calls_next_item(tmp_path: Path, monkeypatch) 
     assert selected.item == item
     assert selected.position == 1
     assert selected.reason is None
+
+
+@pytest.mark.parametrize("failed_status", ["failed", "incomplete"])
+def test_fixed_job_selection_allows_same_item_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_status: str
+) -> None:
+    item = {"aweme_id": "fixture-retry-id", "author": {"nickname": "作者甲"}}
+    expected_job_id = stable_job_id(item)
+    db_path, snapshot_id = _complete_snapshot(tmp_path, [item])
+    update_error = "download_failed" if failed_status == "failed" else "media_missing"
+    registry = CollectionRegistry(db_path, root=tmp_path)
+    if failed_status == "failed":
+        registry.mark_failed(item["aweme_id"], error=update_error)
+    else:
+        registry.mark_incomplete(item["aweme_id"], error=update_error)
+    monkeypatch.setattr(
+        "app.probe_one.CollectionRegistry.next_item",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fixed recovery must not call next_item")
+        ),
+    )
+
+    selected = select_snapshot_item(
+        _collection_page_result(
+            {"status_code": 0, "aweme_list": [item]},
+            position=1,
+        ),
+        expected_job_id=expected_job_id,
+        expected_aweme_id=item["aweme_id"],
+        position=1,
+        snapshot_items={item["aweme_id"]: item},
+        db_path=db_path,
+        snapshot_id=snapshot_id,
+    )
+
+    assert selected.item == item
+    assert selected.position == 1
 
 
 def test_fixed_job_follows_stable_id_when_position_drifts(tmp_path: Path, monkeypatch) -> None:
@@ -402,6 +440,47 @@ def test_extract_standard_play_url_prefers_highest_valid_quality() -> None:
     assert extract_standard_play_url(item) == "https://v.douyinvod.com/1080p"
 
 
+def test_extract_standard_play_urls_returns_ranked_unique_fallbacks() -> None:
+    item = {
+        "video": {
+            "bit_rate": [
+                {
+                    "bit_rate": 800_000,
+                    "play_addr": {
+                        "width": 720,
+                        "height": 1280,
+                        "url_list": ["https://v.douyinvod.com/720p"],
+                    },
+                },
+                {
+                    "bit_rate": 1_600_000,
+                    "play_addr": {
+                        "width": 1080,
+                        "height": 1920,
+                        "url_list": [
+                            "https://v.douyinvod.com/1080p-a",
+                            "https://v.douyinvod.com/1080p-b",
+                        ],
+                    },
+                },
+            ],
+            "play_addr": {
+                "url_list": [
+                    "https://v.douyinvod.com/720p",
+                    "https://v.douyinvod.com/fallback",
+                ]
+            },
+        }
+    }
+
+    assert extract_standard_play_urls(item) == [
+        "https://v.douyinvod.com/1080p-a",
+        "https://v.douyinvod.com/1080p-b",
+        "https://v.douyinvod.com/720p",
+        "https://v.douyinvod.com/fallback",
+    ]
+
+
 def test_execute_probe_uses_play_addr_and_keeps_private_values_out_of_output(
     tmp_path: Path,
 ) -> None:
@@ -468,6 +547,40 @@ def test_execute_probe_uses_play_addr_and_keeps_private_values_out_of_output(
     assert '"entry_returned": true' in output
     assert '"stage": "collect_page"' in output
     assert '"source": "play_addr"' in output
+
+
+def test_execute_probe_tries_next_standard_play_url_after_failure(tmp_path: Path) -> None:
+    first_url = "https://v.douyinvod.com/protected"
+    second_url = "https://v.douyinvod.com/direct"
+    api = FakeAPI(
+        {
+            "items": [
+                {
+                    "aweme_id": "fallback-item",
+                    "video": {"play_addr": {"url_list": [first_url, second_url]}},
+                }
+            ]
+        }
+    )
+    selected: list[str] = []
+
+    async def fetcher(url, _output_dir):
+        selected.append(url)
+        if url == first_url:
+            return FetchResult(200, True, False, "protected_media_box")
+        return FetchResult(200, True, True, size_bytes=32, signature="iso-bmff")
+
+    result = asyncio.run(
+        execute_probe(
+            source_fetcher=api.fetch,
+            fetcher=fetcher,
+            output_dir=tmp_path,
+            reporter=Reporter(io.StringIO()),
+        )
+    )
+
+    assert result == 0
+    assert selected == [first_url, second_url]
 
 
 def test_execute_probe_does_not_fall_back_to_download_addr(tmp_path: Path) -> None:
@@ -599,9 +712,46 @@ def test_download_sample_rejects_common_drm_box_marker(tmp_path: Path) -> None:
         download_sample(session, "https://v.douyinvod.com/protected", tmp_path)
     )
 
-    assert result.reason == "manifest_or_protected_stream"
+    assert result.reason == "protected_media_box"
     assert result.saved is False
     assert list(tmp_path.iterdir()) == []
+
+
+def test_download_sample_allows_drm_marker_text_inside_media_payload(tmp_path: Path) -> None:
+    body = b"\x00\x00\x00\x18ftypisom" + b"video-payload-pssh-not-a-box" + b"\x00" * 32
+    session = FakeSession(
+        FakeResponse(
+            200,
+            headers={"Content-Type": "video/mp4", "Content-Length": str(len(body))},
+            chunks=(body[:25], body[25:]),
+        )
+    )
+
+    result = asyncio.run(
+        download_sample(session, "https://v.douyinvod.com/unprotected", tmp_path)
+    )
+
+    assert result.saved is True
+    assert result.signature == "iso-bmff"
+    assert (tmp_path / "collect-probe-sample.mp4").read_bytes() == body
+
+
+def test_download_sample_allows_box_like_marker_without_valid_full_box(tmp_path: Path) -> None:
+    body = b"\x00\x00\x00\x18ftypisom" + b"\x00\x00\x00\x20psshpayload-data" + b"\x00" * 32
+    session = FakeSession(
+        FakeResponse(
+            200,
+            headers={"Content-Type": "video/mp4", "Content-Length": str(len(body))},
+            chunks=(body[:21], body[21:]),
+        )
+    )
+
+    result = asyncio.run(
+        download_sample(session, "https://v.douyinvod.com/unprotected", tmp_path)
+    )
+
+    assert result.saved is True
+    assert result.signature == "iso-bmff"
 
 
 def test_download_sample_rejects_redirect_outside_platform_hosts(tmp_path: Path) -> None:

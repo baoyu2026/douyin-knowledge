@@ -75,6 +75,13 @@ MANIFEST_CONTENT_TYPES = {
     "application/x-mpegurl",
 }
 PROTECTED_MEDIA_MARKERS = (b"pssh", b"sinf", b"schm", b"encv", b"enca")
+MIN_PROTECTED_BOX_SIZES = {
+    b"pssh": 32,
+    b"sinf": 8,
+    b"schm": 20,
+    b"encv": 8,
+    b"enca": 8,
+}
 
 
 @dataclass(frozen=True)
@@ -408,19 +415,29 @@ def sha256_file(path: Path) -> str:
 
 
 def _https_url(play_addr: Mapping[str, Any]) -> str | None:
+    urls = _https_urls(play_addr)
+    return urls[0] if urls else None
+
+
+def _https_urls(play_addr: Mapping[str, Any]) -> list[str]:
     urls = play_addr.get("url_list")
     if not isinstance(urls, list):
-        return None
+        return []
+    result: list[str] = []
     for value in urls:
         if not isinstance(value, str):
             continue
         candidate = value.strip()
         try:
-            if candidate and urlparse(candidate).scheme.lower() == "https":
-                return candidate
+            if (
+                candidate
+                and urlparse(candidate).scheme.lower() == "https"
+                and candidate not in result
+            ):
+                result.append(candidate)
         except ValueError:
             continue
-    return None
+    return result
 
 
 def _quality_score(entry: Mapping[str, Any]) -> tuple[int, int, int] | None:
@@ -438,8 +455,14 @@ def _quality_score(entry: Mapping[str, Any]) -> tuple[int, int, int] | None:
 
 
 def extract_standard_play_url(item: Mapping[str, Any]) -> str | None:
+    urls = extract_standard_play_urls(item)
+    return urls[0] if urls else None
+
+
+def extract_standard_play_urls(item: Mapping[str, Any]) -> list[str]:
     video_value = item.get("video")
     video = video_value if isinstance(video_value, dict) else {}
+    candidates: list[str] = []
     bit_rates = video.get("bit_rate")
     if isinstance(bit_rates, list):
         ranked = [
@@ -447,17 +470,18 @@ def extract_standard_play_url(item: Mapping[str, Any]) -> str | None:
             for entry in bit_rates
             if isinstance(entry, dict) and (score := _quality_score(entry)) is not None
         ]
-        if ranked:
-            _score, selected = max(ranked, key=lambda item: item[0])
+        for _score, selected in sorted(ranked, key=lambda item: item[0], reverse=True):
             selected_addr = selected.get("play_addr")
             if isinstance(selected_addr, dict):
-                selected_url = _https_url(selected_addr)
-                if selected_url:
-                    return selected_url
+                for selected_url in _https_urls(selected_addr):
+                    if selected_url not in candidates:
+                        candidates.append(selected_url)
     play_addr = video.get("play_addr")
-    if not isinstance(play_addr, dict):
-        return None
-    return _https_url(play_addr)
+    if isinstance(play_addr, dict):
+        for fallback_url in _https_urls(play_addr):
+            if fallback_url not in candidates:
+                candidates.append(fallback_url)
+    return candidates
 
 
 def _is_allowed_media_url(url: str) -> bool:
@@ -532,6 +556,33 @@ def _content_length(headers: Any) -> int | None:
     return value if value >= 0 else None
 
 
+def _contains_protected_box_header(data: bytes) -> bool:
+    """Recognize DRM box headers without matching arbitrary compressed payload bytes."""
+    for marker in PROTECTED_MEDIA_MARKERS:
+        start = 4
+        while True:
+            index = data.find(marker, start)
+            if index < 0:
+                break
+            declared_size = int.from_bytes(data[index - 4 : index], "big")
+            payload = data[index + 4 :]
+            plausible_size = MIN_PROTECTED_BOX_SIZES[marker] <= declared_size <= MAX_MEDIA_BYTES
+            full_box = marker in {b"pssh", b"schm"} and len(payload) >= 4
+            full_box = full_box and payload[0] in {0, 1} and payload[1:4] == b"\x00\x00\x00"
+            sample_entry = marker in {b"encv", b"enca"} and len(payload) >= 8
+            sample_entry = sample_entry and payload[:6] == b"\x00" * 6
+            sample_entry = sample_entry and int.from_bytes(payload[6:8], "big") > 0
+            container = marker == b"sinf" and len(payload) >= 8
+            if container:
+                child_size = int.from_bytes(payload[:4], "big")
+                container = 8 <= child_size <= declared_size - 8
+                container = container and payload[4:8] in {b"frma", b"schm", b"schi"}
+            if plausible_size and (full_box or sample_entry or container):
+                return True
+            start = index + 1
+    return False
+
+
 async def download_sample(
     session: Any,
     url: str,
@@ -580,7 +631,7 @@ async def download_sample(
                 content_type = _header(response.headers, "Content-Type")
                 normalized_type = content_type.split(";", 1)[0].strip().lower()
                 if normalized_type in MANIFEST_CONTENT_TYPES:
-                    return FetchResult(status, True, False, "manifest_or_protected_stream")
+                    return FetchResult(status, True, False, "manifest_stream")
 
                 expected_size = _content_length(response.headers)
                 if expected_size is not None and expected_size > MAX_MEDIA_BYTES:
@@ -600,9 +651,9 @@ async def download_sample(
                         if len(prefix) < 512:
                             prefix.extend(chunk[: 512 - len(prefix)])
                         scan_window = scan_tail + chunk
-                        if any(marker in scan_window for marker in PROTECTED_MEDIA_MARKERS):
+                        if _contains_protected_box_header(scan_window):
                             protected_media = True
-                        scan_tail = scan_window[-3:]
+                        scan_tail = scan_window[-19:]
                         handle.write(chunk)
                     handle.flush()
                     os.fsync(handle.fileno())
@@ -612,7 +663,7 @@ async def download_sample(
                 if expected_size is not None and written != expected_size:
                     return FetchResult(status, True, False, "content_length_mismatch")
                 if protected_media:
-                    return FetchResult(status, True, False, "manifest_or_protected_stream")
+                    return FetchResult(status, True, False, "protected_media_box")
 
                 signature = _media_signature(bytes(prefix))
                 if signature is None:
@@ -715,8 +766,8 @@ async def execute_probe(
         reporter.emit("sample", "skipped", reason=decision_reason)
         return 0
 
-    play_url = extract_standard_play_url(collected_video.item)
-    if not play_url:
+    play_urls = extract_standard_play_urls(collected_video.item)
+    if not play_urls:
         reporter.emit(
             "standard_play_stream",
             "controlled_failure",
@@ -726,10 +777,14 @@ async def execute_probe(
         return CONTROLLED_FAILURE_EXIT
     reporter.emit("standard_play_stream", "ok", available=True, source="play_addr")
 
-    try:
-        fetched = await fetcher(play_url, destination)
-    except Exception:
-        fetched = FetchResult(None, False, False, "http_read_error")
+    fetched = FetchResult(None, False, False, "http_read_error")
+    for play_url in play_urls:
+        try:
+            fetched = await fetcher(play_url, destination)
+        except Exception:
+            fetched = FetchResult(None, False, False, "http_read_error")
+        if fetched.saved:
+            break
     reporter.emit(
         "http_read",
         "ok" if fetched.readable else "controlled_failure",
@@ -831,7 +886,7 @@ def select_snapshot_item(
             return CollectResult(None, "fixed_item_not_in_snapshot", position=position)
         if row["status"] == "completed":
             return CollectResult(None, "fixed_item_already_completed", position=position)
-        if row["status"] not in {"new", "downloaded", "analyzed"}:
+        if row["status"] not in {"new", "downloaded", "analyzed", "failed", "incomplete"}:
             return CollectResult(None, "fixed_item_status_conflict", position=position)
         selected = snapshot_items.get(expected_aweme_id)
         if selected is None:
